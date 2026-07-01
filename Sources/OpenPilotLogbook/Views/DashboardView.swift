@@ -63,20 +63,23 @@ struct DashboardView: View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 14) {
                 recentFlightsPanel
-                    .frame(minWidth: 500)
-                splitPanel
-                    .frame(width: 290)
-                routesPanel
-                    .frame(width: 300)
-                recencyPanel
-                    .frame(width: 300)
+                    .frame(width: 860)
+                VStack(spacing: 14) {
+                    routesPanel
+                        .frame(height: 340)
+                    HStack(alignment: .top, spacing: 14) {
+                        splitPanel
+                        recencyPanel
+                    }
+                }
+                .frame(width: 620)
             }
 
             VStack(alignment: .leading, spacing: 14) {
+                routesPanel
                 recentFlightsPanel
                 HStack(alignment: .top, spacing: 14) {
                     splitPanel
-                    routesPanel
                     recencyPanel
                 }
             }
@@ -189,11 +192,20 @@ private struct DashboardSummaryRow: View {
 private struct RoutePreview: View {
     var routes: [MapRoute]
     var onOpen: () -> Void
+    private var isSnapshot: Bool {
+        ProcessInfo.processInfo.environment["OPENPILOT_SNAPSHOT_PATH"] != nil
+    }
 
     var body: some View {
         ZStack {
-            EarthGlobePreview(routes: routes)
+            globe
                 .clipShape(RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
+            LinearGradient(
+                colors: [Color.black.opacity(0.08), Color.black.opacity(0.34)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .clipShape(RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
             VStack {
                 Spacer()
                 HStack {
@@ -207,123 +219,18 @@ private struct RoutePreview: View {
                 .padding(14)
             }
         }
-        .frame(minHeight: 260)
-    }
-}
-
-private struct EarthGlobePreview: View {
-    var routes: [MapRoute]
-    private let centerLongitude = -18.0
-    private let centerLatitude = 28.0
-
-    var body: some View {
-        Canvas { context, size in
-            let rect = CGRect(origin: .zero, size: size)
-            let center = CGPoint(x: size.width * 0.50, y: size.height * 0.47)
-            let radius = min(size.width, size.height) * 0.43
-            let globeRect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
-
-            context.fill(Path(rect), with: .linearGradient(
-                Gradient(colors: [Color(red: 0.010, green: 0.035, blue: 0.055), Color(red: 0.018, green: 0.070, blue: 0.105)]),
-                startPoint: CGPoint(x: rect.minX, y: rect.minY),
-                endPoint: CGPoint(x: rect.maxX, y: rect.maxY)
-            ))
-            context.fill(Path(ellipseIn: globeRect), with: .radialGradient(
-                Gradient(colors: [
-                    Color(red: 0.055, green: 0.190, blue: 0.275),
-                    Color(red: 0.025, green: 0.085, blue: 0.145),
-                    Color(red: 0.005, green: 0.020, blue: 0.035)
-                ]),
-                center: CGPoint(x: center.x - radius * 0.28, y: center.y - radius * 0.32),
-                startRadius: radius * 0.05,
-                endRadius: radius
-            ))
-
-            var clipped = context
-            clipped.clip(to: Path(ellipseIn: globeRect))
-            drawGraticule(context: &clipped, center: center, radius: radius)
-            drawLand(context: &clipped, center: center, radius: radius)
-            drawRoutes(context: &clipped, center: center, radius: radius)
-
-            context.stroke(Path(ellipseIn: globeRect), with: .color(OpenPilotTheme.cyan.opacity(0.32)), lineWidth: 1.4)
-            context.stroke(Path(ellipseIn: globeRect.insetBy(dx: -3, dy: -3)), with: .color(OpenPilotTheme.cyan.opacity(0.12)), lineWidth: 6)
-        }
+        .frame(minHeight: 300)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Dashboard route globe")
+        .accessibilityValue("\(routes.count.formatted()) mapped routes")
     }
 
-    private func drawGraticule(context: inout GraphicsContext, center: CGPoint, radius: CGFloat) {
-        for latitude in stride(from: -60.0, through: 60.0, by: 30.0) {
-            var path = Path()
-            var didMove = false
-            for longitude in stride(from: -180.0, through: 180.0, by: 4.0) {
-                guard let point = project(latitude: latitude, longitude: longitude, center: center, radius: radius) else {
-                    didMove = false
-                    continue
-                }
-                if didMove { path.addLine(to: point) } else { path.move(to: point); didMove = true }
-            }
-            context.stroke(path, with: .color(.white.opacity(0.11)), lineWidth: 0.8)
+    @ViewBuilder
+    private var globe: some View {
+        if isSnapshot {
+            BlueMarbleGlobeCanvas(routes: routes)
+        } else {
+            WorldSceneView(routes: routes, routeLimit: 700, allowsCameraControl: false, cameraDistance: 6.1)
         }
-        for longitude in stride(from: -180.0, through: 180.0, by: 30.0) {
-            var path = Path()
-            var didMove = false
-            for latitude in stride(from: -80.0, through: 80.0, by: 4.0) {
-                guard let point = project(latitude: latitude, longitude: longitude, center: center, radius: radius) else {
-                    didMove = false
-                    continue
-                }
-                if didMove { path.addLine(to: point) } else { path.move(to: point); didMove = true }
-            }
-            context.stroke(path, with: .color(.white.opacity(0.10)), lineWidth: 0.8)
-        }
-    }
-
-    private func drawLand(context: inout GraphicsContext, center: CGPoint, radius: CGFloat) {
-        let landmasses: [[(Double, Double)]] = [
-            [(-10, 35), (5, 58), (38, 60), (70, 52), (100, 58), (145, 45), (136, 18), (100, 8), (72, 20), (40, 25), (18, 36)],
-            [(-18, 35), (28, 32), (50, 8), (42, -25), (20, -35), (2, -20), (-9, 5)],
-            [(-168, 70), (-140, 68), (-105, 58), (-86, 48), (-78, 30), (-96, 18), (-116, 25), (-132, 45), (-155, 54)],
-            [(-83, 12), (-65, 5), (-50, -12), (-54, -34), (-70, -55), (-78, -28)],
-            [(108, -12), (154, -10), (154, -36), (122, -42), (112, -26)]
-        ]
-        for landmass in landmasses {
-            var path = Path()
-            var started = false
-            for coordinate in landmass {
-                guard let point = project(latitude: coordinate.1, longitude: coordinate.0, center: center, radius: radius) else { continue }
-                if started { path.addLine(to: point) } else { path.move(to: point); started = true }
-            }
-            if started {
-                path.closeSubpath()
-                context.fill(path, with: .color(Color(red: 0.230, green: 0.420, blue: 0.255).opacity(0.84)))
-                context.stroke(path, with: .color(Color(red: 0.480, green: 0.640, blue: 0.400).opacity(0.32)), lineWidth: 0.8)
-            }
-        }
-    }
-
-    private func drawRoutes(context: inout GraphicsContext, center: CGPoint, radius: CGFloat) {
-        for route in routes.prefix(90) {
-            guard
-                let start = project(latitude: route.departureLatitude, longitude: route.departureLongitude, center: center, radius: radius),
-                let end = project(latitude: route.arrivalLatitude, longitude: route.arrivalLongitude, center: center, radius: radius)
-            else { continue }
-            let lift = min(42, max(12, hypot(start.x - end.x, start.y - end.y) * 0.18))
-            var path = Path()
-            path.move(to: start)
-            path.addQuadCurve(to: end, control: CGPoint(x: (start.x + end.x) / 2, y: min(start.y, end.y) - lift))
-            context.stroke(path, with: .color(OpenPilotTheme.cyan.opacity(0.58)), lineWidth: 1.1)
-            context.fill(Path(ellipseIn: CGRect(x: start.x - 1.7, y: start.y - 1.7, width: 3.4, height: 3.4)), with: .color(.white.opacity(0.75)))
-            context.fill(Path(ellipseIn: CGRect(x: end.x - 1.7, y: end.y - 1.7, width: 3.4, height: 3.4)), with: .color(.white.opacity(0.75)))
-        }
-    }
-
-    private func project(latitude: Double, longitude: Double, center: CGPoint, radius: CGFloat) -> CGPoint? {
-        let lat = latitude * .pi / 180
-        let lon = (longitude - centerLongitude) * .pi / 180
-        let lat0 = centerLatitude * .pi / 180
-        let visible = sin(lat0) * sin(lat) + cos(lat0) * cos(lat) * cos(lon)
-        guard visible >= -0.03 else { return nil }
-        let x = radius * CGFloat(cos(lat) * sin(lon))
-        let y = -radius * CGFloat(cos(lat0) * sin(lat) - sin(lat0) * cos(lat) * cos(lon))
-        return CGPoint(x: center.x + x, y: center.y + y)
     }
 }

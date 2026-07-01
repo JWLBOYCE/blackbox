@@ -93,6 +93,20 @@ struct WorldSceneView: NSViewRepresentable {
             return vector
         }
         addPolyline(points, color: NSColor.systemCyan.withAlphaComponent(0.82), to: scene)
+        addMarker(at: start, color: NSColor.white.withAlphaComponent(0.86), to: scene)
+        addMarker(at: end, color: NSColor.systemCyan.withAlphaComponent(0.78), to: scene)
+    }
+
+    private func addMarker(at point: SCNVector3, color: NSColor, to scene: SCNScene) {
+        let marker = SCNSphere(radius: 0.018)
+        marker.segmentCount = 12
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.emission.contents = color.withAlphaComponent(0.72)
+        marker.materials = [material]
+        let node = SCNNode(geometry: marker)
+        node.position = point
+        scene.rootNode.addChildNode(node)
     }
 
     private func addPolyline(_ points: [SCNVector3], color: NSColor, to scene: SCNScene) {

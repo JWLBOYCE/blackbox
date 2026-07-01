@@ -108,7 +108,7 @@ private struct MapOverlayMetric: View {
     }
 }
 
-private struct BlueMarbleGlobeCanvas: View {
+struct BlueMarbleGlobeCanvas: View {
     var routes: [MapRoute]
     private let centerLongitude = 22.0
     private let centerLatitude = 16.0
