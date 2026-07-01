@@ -1,0 +1,382 @@
+import SwiftUI
+import AppKit
+import OpenPilotLogbookCore
+
+@main
+struct OpenPilotLogbookApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var store = LogbookStore()
+
+    var body: some Scene {
+        WindowGroup("Blackbox") {
+            ContentView(store: store)
+                .frame(minWidth: 1120, minHeight: 720)
+                .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
+        }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("New Flight") { store.startNewFlight() }
+                    .keyboardShortcut("n", modifiers: [.command])
+                Button("Export CAA Files") { store.exportReports() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+            }
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        if AppSnapshotRunner.runIfRequested() {
+            return
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+@MainActor
+final class LogbookStore: ObservableObject {
+    @Published var selectedSection: AppSection? = .dashboard
+    @Published var selectedFlightID: Int64?
+    @Published var selectedRouteFlightIDs = Set<Int64>()
+    @Published var flights: [FlightEntry] = []
+    @Published var aircraft: [AircraftSummary] = []
+    @Published var typeSummaries: [TypeSummary] = []
+    @Published var people: [PersonSummary] = []
+    @Published var places: [PlaceVisitSummary] = []
+    @Published var routes: [MapRoute] = []
+    @Published var suggestions = SuggestionBundle()
+    @Published var importCandidates: [ImportCandidate] = []
+    @Published var selectedImportIDs = Set<UUID>()
+    @Published var summary = LogbookSummary()
+    @Published var compliance = ComplianceSnapshot()
+    @Published var logTenComparison = LogTenComparisonSnapshot()
+    @Published var searchText = ""
+    @Published var draftFlight: FlightEntry?
+    @Published var statusMessage = "Loading records..."
+    @Published var lastExport: (csv: URL, html: URL)?
+    @Published var lastEntryKind: String {
+        didSet { UserDefaults.standard.set(lastEntryKind, forKey: "OpenPilotLogbook.lastEntryKind") }
+    }
+
+    var visibleRoutes: [MapRoute] {
+        guard !selectedRouteFlightIDs.isEmpty else { return routes }
+        return routes.filter { selectedRouteFlightIDs.contains($0.id) }
+    }
+
+    let repository: LogbookRepository
+    let paths: LogbookPaths
+
+    init(paths: LogbookPaths = .desktopBackup) {
+        self.paths = paths
+        self.repository = LogbookRepository(paths: paths)
+        self.lastEntryKind = UserDefaults.standard.string(forKey: "OpenPilotLogbook.lastEntryKind") ?? "Flight"
+        refresh()
+    }
+
+    func refresh() {
+        do {
+            try repository.bootstrapIfNeeded()
+            flights = try repository.flights(search: searchText)
+            aircraft = try repository.aircraftSummaries()
+            typeSummaries = try repository.typeSummaries()
+            people = try repository.personSummaries()
+            places = try repository.placeVisitSummaries()
+            routes = try repository.mapRoutes()
+            suggestions = try repository.suggestions()
+            summary = try repository.summary()
+            compliance = try repository.complianceSnapshot()
+            if selectedFlightID == nil, let first = flights.first {
+                selectedFlightID = first.id
+                selectedRouteFlightIDs = []
+                draftFlight = first
+            } else if let id = selectedFlightID {
+                draftFlight = try repository.flight(id: id)
+            }
+            statusMessage = "Loaded \(summary.flightCount) flights."
+        } catch {
+            statusMessage = "Record load failed: \(error)"
+        }
+    }
+
+    func refreshLogTenComparison() {
+        do {
+            logTenComparison = try repository.logTenComparisonSnapshot()
+            statusMessage = "Compared LogTen Pro with Blackbox."
+        } catch {
+            statusMessage = "Comparison failed: \(error)"
+        }
+    }
+
+    func applySearch() {
+        do {
+            flights = try repository.flights(search: searchText)
+            statusMessage = searchText.isEmpty ? "Showing all flights." : "Filtered to \(flights.count) flights."
+        } catch {
+            statusMessage = "Search failed: \(error)"
+        }
+    }
+
+    func selectFlight(id: Int64?) {
+        selectedFlightID = id
+        guard let id else {
+            draftFlight = nil
+            selectedRouteFlightIDs = []
+            return
+        }
+        selectedRouteFlightIDs = [id]
+        do {
+            draftFlight = try repository.flight(id: id)
+        } catch {
+            statusMessage = "Could not load flight \(id): \(error)"
+        }
+    }
+
+    func toggleRouteSelection(for flight: FlightEntry) {
+        guard let id = flight.id else { return }
+        if selectedRouteFlightIDs.contains(id) {
+            selectedRouteFlightIDs.remove(id)
+        } else {
+            selectedRouteFlightIDs.insert(id)
+        }
+        selectedFlightID = id
+        do {
+            draftFlight = try repository.flight(id: id)
+        } catch {
+            statusMessage = "Could not load flight \(id): \(error)"
+        }
+    }
+
+    func showAllRoutes() {
+        selectedRouteFlightIDs = []
+        statusMessage = "Showing all mapped routes."
+    }
+
+    func startNewFlight() {
+        selectedSection = .flights
+        selectedFlightID = nil
+        selectedRouteFlightIDs = []
+        draftFlight = normalizedDraft(FlightEntry(
+            date: Date(),
+            operation: "MP",
+            entryKind: lastEntryKind,
+            pilotFunction: lastEntryKind == "Simulator" ? "FSTD" : "Co-pilot",
+            crewNames: "James Boyce"
+        ))
+    }
+
+    func duplicateCurrentFlight() {
+        guard var draftFlight else { return }
+        draftFlight.id = nil
+        draftFlight.sourcePK = nil
+        draftFlight.date = Date()
+        self.draftFlight = draftFlight
+        normalizeDraft()
+        selectedFlightID = nil
+        selectedRouteFlightIDs = []
+    }
+
+    func saveDraft() {
+        guard let draftFlight else { return }
+        do {
+            let id = try repository.save(draftFlight)
+            selectedFlightID = id
+            refresh()
+            statusMessage = "Saved flight."
+        } catch {
+            statusMessage = "Save failed: \(error)"
+        }
+    }
+
+    func setDraftEntryKind(_ kind: String) {
+        lastEntryKind = kind == "Simulator" ? "Simulator" : "Flight"
+        draftFlight?.entryKind = lastEntryKind
+        normalizeDraft()
+    }
+
+    func normalizeDraft() {
+        guard let draftFlight else { return }
+        self.draftFlight = normalizedDraft(draftFlight)
+    }
+
+    private func normalizedDraft(_ input: FlightEntry) -> FlightEntry {
+        var flight = input
+        flight.entryKind = flight.entryKind == "Simulator" ? "Simulator" : "Flight"
+        flight.signatureName = ""
+        flight.signatureReference = ""
+        if flight.crewNameList.count >= 2 { flight.operation = "MP" }
+        if flight.entryKind == "Simulator" {
+            flight.pilotFunction = "FSTD"
+            flight.fstdMinutes = flight.totalMinutes
+            flight.picMinutes = 0
+            flight.picDayMinutes = 0
+            flight.picNightMinutes = 0
+            flight.picusMinutes = 0
+            flight.copilotMinutes = 0
+            flight.copilotDayMinutes = 0
+            flight.copilotNightMinutes = 0
+            flight.instrumentMinutes = 0
+            flight.crossCountryMinutes = 0
+            flight.pilotFlying = false
+            flight.dayTakeoffs = 0
+            flight.nightTakeoffs = 0
+            flight.totalTakeoffs = 0
+            flight.dayLandings = 0
+            flight.nightLandings = 0
+            flight.totalLandings = 0
+        } else {
+            flight.fstdMinutes = 0
+            if flight.instrumentMinutes == 0 { flight.instrumentMinutes = flight.totalMinutes }
+            if flight.crossCountryMinutes == 0 { flight.crossCountryMinutes = flight.totalMinutes }
+            if flight.pilotFlying || flight.pilotFunction == "PIC" || flight.pilotFunction == "PICUS" {
+                if flight.pilotFunction.isEmpty || flight.pilotFunction == "Co-pilot" { flight.pilotFunction = "PIC" }
+                flight.picMinutes = flight.totalMinutes
+                flight.picNightMinutes = min(flight.totalMinutes, flight.nightMinutes)
+                flight.picDayMinutes = max(0, flight.totalMinutes - flight.picNightMinutes)
+                flight.picusMinutes = flight.pilotFunction == "PICUS" ? flight.totalMinutes : 0
+                flight.copilotMinutes = 0
+                flight.copilotDayMinutes = 0
+                flight.copilotNightMinutes = 0
+            } else {
+                if flight.pilotFunction.isEmpty { flight.pilotFunction = "Co-pilot" }
+                flight.picMinutes = 0
+                flight.picDayMinutes = 0
+                flight.picNightMinutes = 0
+                flight.picusMinutes = 0
+                flight.copilotMinutes = flight.totalMinutes
+                flight.copilotNightMinutes = min(flight.totalMinutes, flight.nightMinutes)
+                flight.copilotDayMinutes = max(0, flight.totalMinutes - flight.copilotNightMinutes)
+            }
+            if flight.pilotFlying {
+                let nightDominant = flight.nightMinutes >= max(1, flight.totalMinutes / 2)
+                flight.dayTakeoffs = nightDominant ? 0 : max(flight.dayTakeoffs, 1)
+                flight.nightTakeoffs = nightDominant ? max(flight.nightTakeoffs, 1) : 0
+                flight.dayLandings = nightDominant ? 0 : max(flight.dayLandings, 1)
+                flight.nightLandings = nightDominant ? max(flight.nightLandings, 1) : 0
+            }
+            flight.totalTakeoffs = flight.dayTakeoffs + flight.nightTakeoffs
+            flight.totalLandings = flight.dayLandings + flight.nightLandings
+        }
+        flight.crewRoles = FlightEntry.crewRolesText(
+            from: FlightEntry.parseCrewRoles(flight.crewRoles),
+            names: flight.crewNameList
+        )
+        return flight
+    }
+
+    func importDocuments(urls: [URL]) {
+        do {
+            importCandidates = try FlightDocumentImporter.candidates(from: urls, suggestions: suggestions)
+            selectedImportIDs = Set(importCandidates.map(\.id))
+            selectedSection = .imports
+            statusMessage = "Found \(importCandidates.count) possible flights. Review before importing."
+        } catch {
+            statusMessage = "Document import failed: \(error)"
+        }
+    }
+
+    func importLogTenDatabase(url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let count = try repository.replaceWithLogTenDatabase(at: url)
+            selectedFlightID = nil
+            selectedRouteFlightIDs = []
+            draftFlight = nil
+            importCandidates.removeAll()
+            selectedImportIDs.removeAll()
+            logTenComparison = LogTenComparisonSnapshot()
+            refresh()
+            statusMessage = "Imported \(count.formatted()) LogTen Pro flights."
+        } catch {
+            statusMessage = "LogTen Pro import failed: \(error)"
+        }
+    }
+
+    func acceptSelectedImports() {
+        let selected = importCandidates.filter { selectedImportIDs.contains($0.id) }
+        guard !selected.isEmpty else {
+            statusMessage = "No import rows selected."
+            return
+        }
+        do {
+            for candidate in selected {
+                _ = try repository.save(candidate.flight)
+            }
+            importCandidates.removeAll { selectedImportIDs.contains($0.id) }
+            selectedImportIDs.removeAll()
+            refresh()
+            statusMessage = "Imported \(selected.count) reviewed flights."
+        } catch {
+            statusMessage = "Import save failed: \(error)"
+        }
+    }
+
+    func deleteSelectedFlight() {
+        guard let selectedFlightID else { return }
+        do {
+            try repository.deleteFlight(id: selectedFlightID)
+            self.selectedFlightID = nil
+            self.selectedRouteFlightIDs.remove(selectedFlightID)
+            self.draftFlight = nil
+            refresh()
+            statusMessage = "Deleted flight."
+        } catch {
+            statusMessage = "Delete failed: \(error)"
+        }
+    }
+
+    func exportReports() {
+        do {
+            let allFlights = try repository.flights()
+            lastExport = try ReportExporter.exportCAAResources(flights: allFlights, summary: try repository.summary(), to: paths.backupFolder)
+            statusMessage = "Exported CSV and printable HTML."
+        } catch {
+            statusMessage = "Export failed: \(error)"
+        }
+    }
+}
+
+enum AppSection: String, CaseIterable, Identifiable {
+    case dashboard = "Dashboard"
+    case flights = "Flights"
+    case aircraft = "Aircraft"
+    case analysis = "Analysis"
+    case map = "3D Map"
+    case comparison = "Compare"
+    case imports = "Import"
+    case compliance = "CAA Check"
+    case reports = "Reports"
+
+    var id: String { rawValue }
+    var subtitle: String {
+        switch self {
+        case .dashboard: return "Totals and readiness"
+        case .flights: return "Flight entries"
+        case .aircraft: return "Fleet history"
+        case .analysis: return "Types and people"
+        case .map: return "Route globe"
+        case .comparison: return "LogTen side by side"
+        case .imports: return "PDF and OCR"
+        case .compliance: return "CAA audit"
+        case .reports: return "CSV and print"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .dashboard: return "gauge.with.dots.needle.67percent"
+        case .flights: return "airplane"
+        case .aircraft: return "airplane.circle"
+        case .analysis: return "chart.bar.xaxis"
+        case .map: return "globe.europe.africa"
+        case .comparison: return "rectangle.split.2x1"
+        case .imports: return "doc.viewfinder"
+        case .compliance: return "checkmark.seal"
+        case .reports: return "doc.text"
+        }
+    }
+}

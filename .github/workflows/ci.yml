@@ -1,0 +1,25 @@
+name: Swift CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Smoke tests
+        run: swift run OpenPilotLogbookCoreSmokeTests
+
+      - name: Private data guard
+        run: |
+          ! git ls-files \
+            | grep -Ev '^Sources/OpenPilotLogbookCore/Resources/airports\.csv$' \
+            | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
