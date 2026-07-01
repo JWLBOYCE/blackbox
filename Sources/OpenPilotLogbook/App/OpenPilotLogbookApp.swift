@@ -74,7 +74,7 @@ final class LogbookStore: ObservableObject {
     let repository: LogbookRepository
     let paths: LogbookPaths
 
-    init(paths: LogbookPaths = .desktopBackup) {
+    init(paths: LogbookPaths = .applicationSupport) {
         self.paths = paths
         self.repository = LogbookRepository(paths: paths)
         self.lastEntryKind = UserDefaults.standard.string(forKey: "OpenPilotLogbook.lastEntryKind") ?? "Flight"

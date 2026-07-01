@@ -15,6 +15,7 @@ func runUnitTests() throws {
     try testHHMMExportsAndEscaping()
     try testPrivacyGuardBlocksPrivateArtifactsOnly()
     try testEncryptedBackupRoundTrip()
+    testApplicationSupportDefaultAvoidsDesktopStorage()
     testRecencyAndDuplicates()
     testRosterPolicyIgnoresGroundDutiesAndNormalizesAirports()
     try testRepositoryAirportOverrideDuplicateAndComplianceGuidance()
@@ -72,6 +73,12 @@ func testEncryptedBackupRoundTrip() throws {
     let restoredBytes = try Data(contentsOf: restored)
     let sourceBytes = try Data(contentsOf: source)
     expect(restoredBytes == sourceBytes, "restored database should match source")
+}
+
+func testApplicationSupportDefaultAvoidsDesktopStorage() {
+    let paths = LogbookPaths.applicationSupport
+    expect(paths.workingDatabase.path.contains("/Library/Application Support/Blackbox/"), "default working database should use Application Support")
+    expect(!paths.workingDatabase.path.contains("/Desktop/"), "default working database should not use Desktop")
 }
 
 func testRecencyAndDuplicates() {

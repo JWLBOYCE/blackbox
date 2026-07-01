@@ -3,16 +3,17 @@ import Foundation
 public final class LogbookRepository {
     public let paths: LogbookPaths
 
-    public init(paths: LogbookPaths = .desktopBackup) {
+    public init(paths: LogbookPaths = .applicationSupport) {
         self.paths = paths
     }
 
     public func bootstrapIfNeeded() throws {
+        try migrateLegacyDesktopStoreIfNeeded()
         let needsImport = !FileManager.default.fileExists(atPath: paths.workingDatabase.path)
         let db = try SQLiteConnection(path: paths.workingDatabase.path)
         try createSchema(in: db)
         let isEmpty = try flightCount(in: db) == 0
-        if needsImport || isEmpty {
+        if (needsImport || isEmpty), FileManager.default.fileExists(atPath: paths.sourceLogTenDatabase.path) {
             try importLogTenBackup(into: db)
         }
         if try setting("enriched_import_v5", in: db) != "true" {
@@ -149,6 +150,15 @@ public final class LogbookRepository {
         if !columns.contains(name) {
             try db.execute("ALTER TABLE \(table) ADD COLUMN \(name) \(definition)")
         }
+    }
+
+    private func migrateLegacyDesktopStoreIfNeeded() throws {
+        guard paths.workingDatabase == LogbookPaths.applicationSupport.workingDatabase else { return }
+        guard !FileManager.default.fileExists(atPath: paths.workingDatabase.path) else { return }
+        let legacy = LogbookPaths.desktopBackup.workingDatabase
+        guard FileManager.default.fileExists(atPath: legacy.path) else { return }
+        try FileManager.default.createDirectory(at: paths.workingDatabase.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: legacy, to: paths.workingDatabase)
     }
 
     public func flights(search: String = "") throws -> [FlightEntry] {
