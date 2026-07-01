@@ -10,12 +10,13 @@ Thanks for helping improve Blackbox.
 - Keep times in `HH:MM`.
 - Keep distances in nautical miles.
 - Treat LogTen Pro imports as read-only source imports.
-- Add or update smoke tests for mapping, import, CAA checks, or time calculations.
+- Add or update unit tests and smoke tests for mapping, import, CAA checks, time calculations, privacy guards, or backup behavior.
 
 ## Local Checks
 
 ```bash
 swift build
+swift run OpenPilotLogbookCoreUnitTests
 swift run OpenPilotLogbookCoreSmokeTests
 ./script/build_and_run.sh --check
 ```
@@ -24,7 +25,11 @@ Before opening a pull request:
 
 ```bash
 git status --short
-git ls-files | rg 'sqlite|\\.db|\\.sql|LogTen|roster|\\.pdf|\\.csv' | rg -v '^Sources/OpenPilotLogbookCore/Resources/airports\\.csv$' || true
+git ls-files \
+  | rg -i 'sqlite|\\.db$|\\.sql$|LogTenCoreDataStore|OpenPilotLogbook\\.sqlite|roster|\\.pdf$|\\.csv$|\\.blackboxbackup$' \
+  | rg -v '^Sources/OpenPilotLogbookCore/Resources/airports\\.csv$' \
+  | rg -v '^Sources/CSQLite/module\\.modulemap$|^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\\.swift$' \
+  || true
 ```
 
 The second command should not show private logbook files.

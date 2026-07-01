@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "OpenPilotLogbook", targets: ["OpenPilotLogbook"]),
+        .executable(name: "OpenPilotLogbookCoreUnitTests", targets: ["OpenPilotLogbookCoreUnitTests"]),
         .executable(name: "OpenPilotLogbookCoreSmokeTests", targets: ["OpenPilotLogbookCoreSmokeTests"])
     ],
     targets: [
@@ -28,6 +29,10 @@ let package = Package(
             name: "OpenPilotLogbook",
             dependencies: ["OpenPilotLogbookCore"],
             exclude: ["Assets"]
+        ),
+        .executableTarget(
+            name: "OpenPilotLogbookCoreUnitTests",
+            dependencies: ["OpenPilotLogbookCore"]
         ),
         .executableTarget(
             name: "OpenPilotLogbookCoreSmokeTests",

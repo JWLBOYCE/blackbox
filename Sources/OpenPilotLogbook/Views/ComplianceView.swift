@@ -27,6 +27,9 @@ struct ComplianceView: View {
                     }
                     TableColumn("Field", value: \.field)
                     TableColumn("Issue", value: \.message)
+                    TableColumn("Fix") { issue in
+                        Text(issue.guidance.isEmpty ? "Review this entry and complete the missing CAA field." : issue.guidance)
+                    }
                     TableColumn("Flight ID") { issue in
                         Text("\(issue.flightID)").monospacedDigit()
                     }

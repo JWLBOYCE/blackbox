@@ -102,12 +102,14 @@ case "$MODE" in
     render_snapshot "map" "$SNAPSHOT_DIR/map.png"
     render_snapshot "comparison" "$SNAPSHOT_DIR/comparison.png"
     render_snapshot "imports" "$SNAPSHOT_DIR/imports.png"
+    render_snapshot "reports" "$SNAPSHOT_DIR/reports.png"
     render_snapshot "dashboard" "$SNAPSHOT_DIR/dashboard-compact.png" 1180 820
     render_snapshot "flights" "$SNAPSHOT_DIR/flights-compact.png" 1180 820
     render_snapshot "analysis" "$SNAPSHOT_DIR/analysis-compact.png" 1180 820
     render_snapshot "map" "$SNAPSHOT_DIR/map-compact.png" 1180 820
     render_snapshot "comparison" "$SNAPSHOT_DIR/comparison-compact.png" 1180 820
     render_snapshot "imports" "$SNAPSHOT_DIR/imports-compact.png" 1180 820
+    render_snapshot "reports" "$SNAPSHOT_DIR/reports-compact.png" 1180 820
     ;;
   *)
     echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--check]" >&2

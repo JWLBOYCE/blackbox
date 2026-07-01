@@ -125,9 +125,11 @@ public final class LogbookRepository {
             icao TEXT NOT NULL DEFAULT '',
             iata TEXT NOT NULL DEFAULT '',
             latitude REAL,
-            longitude REAL
+            longitude REAL,
+            source TEXT NOT NULL DEFAULT ''
         )
         """)
+        try addColumnIfNeeded("places", name: "source", definition: "TEXT NOT NULL DEFAULT ''", in: db)
         try db.execute("""
         CREATE TABLE IF NOT EXISTS people (
             name TEXT PRIMARY KEY,
@@ -449,6 +451,54 @@ public final class LogbookRepository {
         )
     }
 
+    public func recencySnapshot(now: Date = Date()) throws -> RecencySnapshot {
+        try LogbookAnalysis.recencySnapshot(flights: flights(), now: now)
+    }
+
+    public func duplicateFlightGroups() throws -> [DuplicateFlightGroup] {
+        try LogbookAnalysis.duplicateGroups(flights: flights())
+    }
+
+    public func airportOverrides() throws -> [AirportOverride] {
+        let db = try SQLiteConnection(path: paths.workingDatabase.path)
+        return try db.rows("""
+        SELECT identifier, name, latitude, longitude
+        FROM places
+        WHERE source = 'Manual Override' AND latitude IS NOT NULL AND longitude IS NOT NULL
+        ORDER BY identifier
+        """).compactMap { row in
+            guard
+                let identifier = row["identifier"]?.string,
+                let latitude = row["latitude"]?.double,
+                let longitude = row["longitude"]?.double
+            else { return nil }
+            return AirportOverride(identifier: identifier, name: row["name"]?.string ?? "", latitude: latitude, longitude: longitude)
+        }
+    }
+
+    public func saveAirportOverride(_ override: AirportOverride) throws {
+        let identifier = override.identifier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !identifier.isEmpty else {
+            throw NSError(domain: "BlackboxAirportOverride", code: 1, userInfo: [NSLocalizedDescriptionKey: "Airport identifier is required."])
+        }
+        guard (-90...90).contains(override.latitude), (-180...180).contains(override.longitude) else {
+            throw NSError(domain: "BlackboxAirportOverride", code: 2, userInfo: [NSLocalizedDescriptionKey: "Airport coordinates are outside valid latitude/longitude ranges."])
+        }
+        let db = try SQLiteConnection(path: paths.workingDatabase.path)
+        try createSchema(in: db)
+        try db.execute("""
+        INSERT OR REPLACE INTO places(identifier, name, icao, iata, latitude, longitude, source)
+        VALUES (?, ?, ?, ?, ?, ?, 'Manual Override')
+        """, values: [
+            .text(identifier),
+            .text(override.name.trimmingCharacters(in: .whitespacesAndNewlines)),
+            .text(identifier.count == 4 ? identifier : ""),
+            .text(identifier.count == 3 ? identifier : ""),
+            .real(override.latitude),
+            .real(override.longitude)
+        ])
+    }
+
     private func enrichedForSave(_ input: FlightEntry, db: SQLiteConnection) throws -> FlightEntry {
         var flight = input
         flight.entryKind = flight.entryKind == "Simulator" ? "Simulator" : "Flight"
@@ -678,17 +728,17 @@ public final class LogbookRepository {
             let flightID = flight.id ?? 0
             let hasLoggableTime = flight.totalMinutes > 0 || flight.fstdMinutes > 0
             let isPureFSTD = flight.fstdMinutes > 0 && flight.fstdMinutes == flight.totalMinutes
-            let checks: [(String, String, Bool)] = [
-                ("Departure", "CAA/EASA format expects a departure place.", isPureFSTD || !flight.departure.isEmpty || !flight.route.isEmpty),
-                ("Arrival", "CAA/EASA format expects an arrival place.", isPureFSTD || !flight.arrival.isEmpty || !flight.route.isEmpty),
-                ("Aircraft", "Aircraft registration or ID is missing.", !flight.aircraftID.isEmpty),
-                ("Aircraft type", "Aircraft type/class should be available for the aircraft column.", !flight.aircraftType.isEmpty),
-                ("Total time", "Total flight time is zero.", hasLoggableTime),
-                ("Function", "Pilot function time should show PIC, co-pilot, dual, instructor, or FSTD.", !hasLoggableTime || flight.picMinutes + flight.copilotMinutes + flight.dualMinutes + flight.instructorMinutes + flight.fstdMinutes > 0),
-                ("Operation", "Single-pilot or multi-pilot operation should be identified.", !flight.operation.isEmpty)
+            let checks: [(String, String, String, Bool)] = [
+                ("Departure", "CAA/EASA format expects a departure place.", "Enter the departure ICAO/IATA code, or mark the entry as simulator if it is FSTD-only.", isPureFSTD || !flight.departure.isEmpty || !flight.route.isEmpty),
+                ("Arrival", "CAA/EASA format expects an arrival place.", "Enter the arrival ICAO/IATA code, or mark the entry as simulator if it is FSTD-only.", isPureFSTD || !flight.arrival.isEmpty || !flight.route.isEmpty),
+                ("Aircraft", "Aircraft registration or ID is missing.", "Add the aircraft registration, simulator identifier, or other logbook aircraft ID.", !flight.aircraftID.isEmpty),
+                ("Aircraft type", "Aircraft type/class should be available for the aircraft column.", "Add the aircraft type or simulator device type used for the entry.", !flight.aircraftType.isEmpty),
+                ("Total time", "Total flight time is zero.", "Enter the elapsed sector or simulator time in HH:MM.", hasLoggableTime),
+                ("Function", "Pilot function time should show PIC, co-pilot, dual, instructor, or FSTD.", "Select the pilot function or simulator mode so the correct CAA column is populated.", !hasLoggableTime || flight.picMinutes + flight.copilotMinutes + flight.dualMinutes + flight.instructorMinutes + flight.fstdMinutes > 0),
+                ("Operation", "Single-pilot or multi-pilot operation should be identified.", "Set SP or MP; entries with two or more crew names should be MP.", !flight.operation.isEmpty)
             ]
-            for check in checks where !check.2 {
-                issues.append(ComplianceIssue(flightID: flightID, date: flight.date, field: check.0, message: check.1))
+            for check in checks where !check.3 {
+                issues.append(ComplianceIssue(flightID: flightID, date: flight.date, field: check.0, message: check.1, guidance: check.2))
             }
         }
         return ComplianceSnapshot(issues: issues, checkedFlights: allFlights.count)
@@ -902,6 +952,11 @@ public final class LogbookRepository {
     }
 
     private func importPlaces(from source: SQLiteConnection, into destination: SQLiteConnection) throws {
+        let overrides = try destination.rows("""
+        SELECT identifier, name, icao, iata, latitude, longitude, source
+        FROM places
+        WHERE source = 'Manual Override'
+        """)
         try destination.execute("DELETE FROM places")
         let rows = try source.rows("""
         SELECT COALESCE(NULLIF(ZPLACE_IDENTIFIER, ''), NULLIF(ZPLACE_ICAOID, ''), NULLIF(ZPLACE_IATAID, '')) AS identifier,
@@ -920,8 +975,8 @@ public final class LogbookRepository {
             let iata = row["iata"]?.string ?? ""
             let airport = airportDB.airport(for: identifier) ?? airportDB.airport(for: icao) ?? airportDB.airport(for: iata)
             try destination.execute("""
-            INSERT OR REPLACE INTO places(identifier, name, icao, iata, latitude, longitude)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO places(identifier, name, icao, iata, latitude, longitude, source)
+            VALUES (?, ?, ?, ?, ?, ?, 'LogTen')
             """, values: [
                 .text(identifier),
                 .text((row["name"]?.string ?? "").isEmpty ? airport?.name ?? "" : row["name"]?.string ?? ""),
@@ -929,6 +984,20 @@ public final class LogbookRepository {
                 .text(iata),
                 airport.map { SQLiteValue.real($0.latitude) } ?? row["latitude"]?.double.map(SQLiteValue.real) ?? .null,
                 airport.map { SQLiteValue.real($0.longitude) } ?? row["longitude"]?.double.map(SQLiteValue.real) ?? .null
+            ])
+        }
+        for row in overrides {
+            guard let identifier = row["identifier"]?.string else { continue }
+            try destination.execute("""
+            INSERT OR REPLACE INTO places(identifier, name, icao, iata, latitude, longitude, source)
+            VALUES (?, ?, ?, ?, ?, ?, 'Manual Override')
+            """, values: [
+                .text(identifier),
+                .text(row["name"]?.string ?? ""),
+                .text(row["icao"]?.string ?? ""),
+                .text(row["iata"]?.string ?? ""),
+                row["latitude"]?.double.map(SQLiteValue.real) ?? .null,
+                row["longitude"]?.double.map(SQLiteValue.real) ?? .null
             ])
         }
     }

@@ -26,6 +26,9 @@ work/
 LogTenCoreDataStore*
 OpenPilotLogbook.sqlite*
 Blackbox-working-backup-*.sqlite
+Blackbox-pre-restore-*.sqlite
+*.blackboxbackup
+Blackbox_Encrypted_Backup_*.manifest.json
 LogTenPro_Backup*/
 
 # Imported personal documents

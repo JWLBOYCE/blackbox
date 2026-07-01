@@ -33,10 +33,18 @@ Run:
 
 ```bash
 git status --short
-git ls-files | rg 'sqlite|\\.db|\\.sql|LogTen|roster|\\.pdf|\\.csv' | rg -v '^Sources/OpenPilotLogbookCore/Resources/airports\\.csv$' || true
+swift build
+swift run OpenPilotLogbookCoreUnitTests
+swift run OpenPilotLogbookCoreSmokeTests
+./script/build_and_run.sh --check
+git ls-files \
+  | rg -i 'sqlite|\\.db$|\\.sql$|LogTenCoreDataStore|OpenPilotLogbook\\.sqlite|roster|\\.pdf$|\\.csv$|\\.blackboxbackup$' \
+  | rg -v '^Sources/OpenPilotLogbookCore/Resources/airports\\.csv$' \
+  | rg -v '^Sources/CSQLite/module\\.modulemap$|^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\\.swift$' \
+  || true
 ```
 
-The second command should return no private files.
+The privacy command should return no private files.
 
 ## Protect The Repository
 

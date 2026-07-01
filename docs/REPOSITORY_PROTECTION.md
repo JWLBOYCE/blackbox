@@ -29,6 +29,14 @@ Use the included GitHub Actions workflow:
 Swift CI / build-and-test
 ```
 
+That single required check runs:
+
+- `swift build`
+- `swift run OpenPilotLogbookCoreUnitTests`
+- `swift run OpenPilotLogbookCoreSmokeTests`
+- `./script/build_and_run.sh --check`
+- private-data filename guard
+
 ## Repository Rulesets
 
 Add rules to block files matching:
@@ -41,7 +49,12 @@ LogTenCoreDataStore*
 OpenPilotLogbook.sqlite*
 *.pdf
 *.csv
+*.numbers
+*.xlsx
+*.xls
 ```
+
+Allow only `Sources/OpenPilotLogbookCore/Resources/airports.csv` from the CSV rule.
 
 ## Secrets
 

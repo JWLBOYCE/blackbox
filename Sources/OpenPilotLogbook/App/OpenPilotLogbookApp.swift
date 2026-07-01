@@ -52,10 +52,16 @@ final class LogbookStore: ObservableObject {
     @Published var summary = LogbookSummary()
     @Published var compliance = ComplianceSnapshot()
     @Published var logTenComparison = LogTenComparisonSnapshot()
+    @Published var recency = RecencySnapshot()
+    @Published var duplicateGroups: [DuplicateFlightGroup] = []
+    @Published var airportOverrides: [AirportOverride] = []
     @Published var searchText = ""
     @Published var draftFlight: FlightEntry?
     @Published var statusMessage = "Loading records..."
     @Published var lastExport: (csv: URL, html: URL)?
+    @Published var lastBackup: BackupResult?
+    @Published var backupPassphrase = ""
+    @Published var airportOverride = AirportOverride(identifier: "", name: "", latitude: 0, longitude: 0)
     @Published var lastEntryKind: String {
         didSet { UserDefaults.standard.set(lastEntryKind, forKey: "OpenPilotLogbook.lastEntryKind") }
     }
@@ -87,6 +93,9 @@ final class LogbookStore: ObservableObject {
             suggestions = try repository.suggestions()
             summary = try repository.summary()
             compliance = try repository.complianceSnapshot()
+            recency = try repository.recencySnapshot()
+            duplicateGroups = try repository.duplicateFlightGroups()
+            airportOverrides = try repository.airportOverrides()
             if selectedFlightID == nil, let first = flights.first {
                 selectedFlightID = first.id
                 selectedRouteFlightIDs = []
@@ -336,6 +345,53 @@ final class LogbookStore: ObservableObject {
             statusMessage = "Exported CSV and printable HTML."
         } catch {
             statusMessage = "Export failed: \(error)"
+        }
+    }
+
+    func createEncryptedBackup() {
+        do {
+            lastBackup = try EncryptedBackupService.createBackup(
+                database: paths.workingDatabase,
+                destinationFolder: paths.backupFolder,
+                passphrase: backupPassphrase
+            )
+            backupPassphrase = ""
+            statusMessage = "Created encrypted backup."
+        } catch {
+            statusMessage = "Encrypted backup failed: \(error)"
+        }
+    }
+
+    func restoreEncryptedBackup(url: URL) {
+        do {
+            let restorePoint = paths.backupFolder.appendingPathComponent("Blackbox-pre-restore-\(Int(Date().timeIntervalSince1970)).sqlite")
+            if FileManager.default.fileExists(atPath: paths.workingDatabase.path) {
+                try? FileManager.default.copyItem(at: paths.workingDatabase, to: restorePoint)
+            }
+            try EncryptedBackupService.restoreBackup(
+                encryptedBackup: url,
+                destinationDatabase: paths.workingDatabase,
+                passphrase: backupPassphrase
+            )
+            backupPassphrase = ""
+            selectedFlightID = nil
+            selectedRouteFlightIDs = []
+            draftFlight = nil
+            refresh()
+            statusMessage = "Restored encrypted backup."
+        } catch {
+            statusMessage = "Restore failed: \(error)"
+        }
+    }
+
+    func saveAirportOverride() {
+        do {
+            try repository.saveAirportOverride(airportOverride)
+            airportOverride = AirportOverride(identifier: "", name: "", latitude: 0, longitude: 0)
+            refresh()
+            statusMessage = "Saved airport coordinate override."
+        } catch {
+            statusMessage = "Airport override failed: \(error)"
         }
     }
 }

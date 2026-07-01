@@ -16,6 +16,11 @@ It imports LogTen Pro SQLite data read-only, keeps times in `HH:MM`, stores dist
 - PIC, PICUS, co-pilot, dual, instructor, FSTD, IFR/instrument, and cross-country time fields.
 - Route globe using bundled airport coordinates and NASA Blue Marble imagery.
 - CSV and printable HTML exports.
+- Encrypted local backup and restore.
+- Recency monitoring for last-12-months, 90-day landings, night landings, and instrument time.
+- Duplicate flight detection.
+- Manual airport coordinate overrides.
+- Roster import policy that ignores ground duties and normalizes IATA tokens to ICAO where possible.
 - Local-only SQLite storage.
 
 ## Privacy
@@ -27,6 +32,7 @@ The `.gitignore` blocks common private files including:
 - `LogTenCoreDataStore.sql`
 - `OpenPilotLogbook.sqlite`
 - `*.sqlite`, `*.db`, `*.sql`
+- `*.blackboxbackup`
 - PDFs, spreadsheets, CSVs, and generated app output
 
 Before publishing, always run:
@@ -49,7 +55,13 @@ Build:
 swift build
 ```
 
-Run smoke tests:
+Run the unit test suite:
+
+```bash
+swift run OpenPilotLogbookCoreUnitTests
+```
+
+Run data smoke tests:
 
 ```bash
 swift run OpenPilotLogbookCoreSmokeTests
@@ -92,6 +104,8 @@ Contributions are welcome, but privacy and aviation-record correctness matter he
 - [docs/GITHUB_PUBLISHING.md](docs/GITHUB_PUBLISHING.md)
 
 Do not submit real logbook data in issues, pull requests, screenshots, fixtures, or tests.
+
+Pull requests must pass `Swift CI / build-and-test`, which runs build, unit tests, smoke tests, in-app snapshots, and the private-data guard.
 
 ## License
 

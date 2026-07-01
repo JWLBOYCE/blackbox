@@ -354,12 +354,14 @@ public struct ComplianceIssue: Identifiable, Equatable {
     public var date: Date
     public var field: String
     public var message: String
+    public var guidance: String
 
-    public init(flightID: Int64, date: Date, field: String, message: String) {
+    public init(flightID: Int64, date: Date, field: String, message: String, guidance: String = "") {
         self.flightID = flightID
         self.date = date
         self.field = field
         self.message = message
+        self.guidance = guidance
     }
 }
 
@@ -462,5 +464,68 @@ public struct LogTenComparisonSnapshot: Equatable {
         self.missingInBlackbox = missingInBlackbox
         self.missingInLogTen = missingInLogTen
         self.issues = issues
+    }
+}
+
+public struct RecencySnapshot: Equatable {
+    public var hoursLast12Months: Int
+    public var hoursLast90Days: Int
+    public var landingsLast90Days: Int
+    public var nightLandingsLast90Days: Int
+    public var instrumentLast90Days: Int
+    public var daysSinceLastLanding: Int?
+    public var daysSinceLastNightLanding: Int?
+
+    public init(
+        hoursLast12Months: Int = 0,
+        hoursLast90Days: Int = 0,
+        landingsLast90Days: Int = 0,
+        nightLandingsLast90Days: Int = 0,
+        instrumentLast90Days: Int = 0,
+        daysSinceLastLanding: Int? = nil,
+        daysSinceLastNightLanding: Int? = nil
+    ) {
+        self.hoursLast12Months = hoursLast12Months
+        self.hoursLast90Days = hoursLast90Days
+        self.landingsLast90Days = landingsLast90Days
+        self.nightLandingsLast90Days = nightLandingsLast90Days
+        self.instrumentLast90Days = instrumentLast90Days
+        self.daysSinceLastLanding = daysSinceLastLanding
+        self.daysSinceLastNightLanding = daysSinceLastNightLanding
+    }
+}
+
+public struct DuplicateFlightGroup: Identifiable, Equatable {
+    public var id: String
+    public var flights: [FlightEntry]
+
+    public init(id: String, flights: [FlightEntry]) {
+        self.id = id
+        self.flights = flights
+    }
+}
+
+public struct AirportOverride: Identifiable, Equatable {
+    public var id: String { identifier }
+    public var identifier: String
+    public var name: String
+    public var latitude: Double
+    public var longitude: Double
+
+    public init(identifier: String, name: String, latitude: Double, longitude: Double) {
+        self.identifier = identifier
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+}
+
+public struct BackupResult: Equatable {
+    public var encryptedBackup: URL
+    public var manifest: URL
+
+    public init(encryptedBackup: URL, manifest: URL) {
+        self.encryptedBackup = encryptedBackup
+        self.manifest = manifest
     }
 }

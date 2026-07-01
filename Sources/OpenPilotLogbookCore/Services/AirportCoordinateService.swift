@@ -53,7 +53,9 @@ public final class AirportCoordinateService {
             for code in [fields[1], fields[12], fields[13], fields[14], fields[15]] {
                 let normalized = normalized(code)
                 if !normalized.isEmpty {
-                    result[normalized] = airport
+                    if result[normalized] == nil {
+                        result[normalized] = airport
+                    }
                 }
             }
         }

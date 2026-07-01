@@ -52,8 +52,10 @@ struct DashboardView: View {
             MetricTile(title: "Co-pilot Day", value: LogbookFormatters.hours(store.summary.copilotDayMinutes), systemImage: "sun.max", tint: OpenPilotTheme.amber)
             MetricTile(title: "Co-pilot Night", value: LogbookFormatters.hours(store.summary.copilotNightMinutes), systemImage: "moon.stars", tint: OpenPilotTheme.blue)
             MetricTile(title: "Night", value: LogbookFormatters.hours(store.summary.nightMinutes), systemImage: "moon", tint: OpenPilotTheme.cyan)
+            MetricTile(title: "Last 12 Months", value: LogbookFormatters.hours(store.recency.hoursLast12Months), systemImage: "calendar.badge.clock", tint: OpenPilotTheme.green)
+            MetricTile(title: "90 Day Landings", value: "\(store.recency.landingsLast90Days)", systemImage: "arrow.down.to.line", tint: OpenPilotTheme.green)
             MetricTile(title: "Mapped NM", value: String(format: "%.0f", store.summary.distanceNM), systemImage: "globe.europe.africa", tint: OpenPilotTheme.blue)
-            MetricTile(title: "Landings", value: store.summary.landings.formatted(), systemImage: "arrow.down.to.line", tint: OpenPilotTheme.green)
+            MetricTile(title: "Duplicates", value: "\(store.duplicateGroups.count)", systemImage: "doc.on.doc", tint: store.duplicateGroups.isEmpty ? OpenPilotTheme.green : OpenPilotTheme.amber)
         }
     }
 
@@ -66,6 +68,8 @@ struct DashboardView: View {
                     .frame(width: 290)
                 routesPanel
                     .frame(width: 300)
+                recencyPanel
+                    .frame(width: 300)
             }
 
             VStack(alignment: .leading, spacing: 14) {
@@ -73,6 +77,7 @@ struct DashboardView: View {
                 HStack(alignment: .top, spacing: 14) {
                     splitPanel
                     routesPanel
+                    recencyPanel
                 }
             }
         }
@@ -101,6 +106,20 @@ struct DashboardView: View {
         Panel("Recent Routes", systemImage: "map") {
             RoutePreview(routes: store.visibleRoutes) {
                 store.selectedSection = .map
+            }
+        }
+    }
+
+    private var recencyPanel: some View {
+        Panel("Recency", systemImage: "calendar.badge.clock") {
+            VStack(alignment: .leading, spacing: 12) {
+                ProgressLine(title: "Last 90 days", value: LogbookFormatters.hours(store.recency.hoursLast90Days), progress: min(1, Double(store.recency.hoursLast90Days) / 6_000), tint: OpenPilotTheme.cyan)
+                ProgressLine(title: "Instrument 90 days", value: LogbookFormatters.hours(store.recency.instrumentLast90Days), progress: min(1, Double(store.recency.instrumentLast90Days) / 360), tint: OpenPilotTheme.blue)
+                Divider().opacity(0.35)
+                DashboardSummaryRow(label: "Landings 90 days", value: "\(store.recency.landingsLast90Days)")
+                DashboardSummaryRow(label: "Night landings 90 days", value: "\(store.recency.nightLandingsLast90Days)")
+                DashboardSummaryRow(label: "Last landing", value: store.recency.daysSinceLastLanding.map { "\($0)d ago" } ?? "None")
+                DashboardSummaryRow(label: "Last night landing", value: store.recency.daysSinceLastNightLanding.map { "\($0)d ago" } ?? "None")
             }
         }
     }
@@ -148,6 +167,22 @@ struct DashboardView: View {
             }
             .padding(.top, 12)
         }
+    }
+}
+
+private struct DashboardSummaryRow: View {
+    var label: String
+    var value: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(OpenPilotTheme.muted)
+            Spacer()
+            Text(value)
+                .font(.caption.monospacedDigit().weight(.medium))
+        }
+        .font(.caption)
     }
 }
 
