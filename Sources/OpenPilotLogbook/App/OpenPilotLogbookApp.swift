@@ -71,6 +71,13 @@ final class LogbookStore: ObservableObject {
         return routes.filter { selectedRouteFlightIDs.contains($0.id) }
     }
 
+    var highlightedFlights: [FlightEntry] {
+        guard !selectedRouteFlightIDs.isEmpty else { return [] }
+        return flights.filter { flight in
+            flight.id.map { selectedRouteFlightIDs.contains($0) } ?? false
+        }
+    }
+
     let repository: LogbookRepository
     let paths: LogbookPaths
 
@@ -89,7 +96,7 @@ final class LogbookStore: ObservableObject {
             typeSummaries = try repository.typeSummaries()
             people = try repository.personSummaries()
             places = try repository.placeVisitSummaries()
-            routes = try repository.mapRoutes()
+            routes = try repository.mapRoutes(limit: 5_000)
             suggestions = try repository.suggestions()
             summary = try repository.summary()
             compliance = try repository.complianceSnapshot()

@@ -2,9 +2,22 @@ import Foundation
 
 public struct AirportCoordinate: Equatable {
     public var identifier: String
+    public var iataCode: String
     public var name: String
     public var latitude: Double
     public var longitude: Double
+
+    public var displayCode: String {
+        iataCode.isEmpty ? identifier : iataCode
+    }
+
+    public init(identifier: String, iataCode: String = "", name: String, latitude: Double, longitude: Double) {
+        self.identifier = identifier
+        self.iataCode = iataCode
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+    }
 }
 
 public final class AirportCoordinateService {
@@ -46,6 +59,7 @@ public final class AirportCoordinateService {
 
             let airport = AirportCoordinate(
                 identifier: fields[1],
+                iataCode: fields[13],
                 name: fields[3],
                 latitude: latitude,
                 longitude: longitude

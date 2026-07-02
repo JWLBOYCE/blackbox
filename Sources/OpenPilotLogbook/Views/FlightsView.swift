@@ -18,6 +18,11 @@ struct FlightsView: View {
                             .foregroundStyle(OpenPilotTheme.muted)
                     }
                     flightSearch
+                    if !store.highlightedFlights.isEmpty {
+                        HighlightedFlightsTotals(flights: store.highlightedFlights) {
+                            store.showAllRoutes()
+                        }
+                    }
                     flightList
                 }
             }
@@ -93,6 +98,109 @@ struct FlightsView: View {
                 }
             }
         }
+    }
+}
+
+private struct HighlightedFlightsTotals: View {
+    var flights: [FlightEntry]
+    var onClear: () -> Void
+
+    private var totals: FlightSelectionTotals {
+        FlightSelectionTotals(flights: flights)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label("\(flights.count.formatted()) highlighted", systemImage: "checkmark.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(OpenPilotTheme.cyan)
+                Spacer()
+                Button("Clear", action: onClear)
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(OpenPilotTheme.muted)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                TotalsChip("Total", LogbookFormatters.hours(totals.totalMinutes))
+                TotalsChip("PIC", LogbookFormatters.hours(totals.picMinutes))
+                TotalsChip("PICUS", LogbookFormatters.hours(totals.picusMinutes))
+                TotalsChip("Co-pilot", LogbookFormatters.hours(totals.copilotMinutes))
+                TotalsChip("Night", LogbookFormatters.hours(totals.nightMinutes))
+                TotalsChip("IFR", LogbookFormatters.hours(totals.instrumentMinutes))
+                TotalsChip("XC", LogbookFormatters.hours(totals.crossCountryMinutes))
+                TotalsChip("FSTD", LogbookFormatters.hours(totals.fstdMinutes))
+                TotalsChip("T/O", "\(totals.totalTakeoffs)")
+                TotalsChip("Ldg", "\(totals.totalLandings)")
+                TotalsChip("PF", "\(totals.pilotFlyingCount)")
+                TotalsChip("NM", String(format: "%.0f", totals.distanceNM))
+            }
+        }
+        .padding(12)
+        .background(OpenPilotTheme.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
+        .overlay {
+            RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
+                .stroke(OpenPilotTheme.blue.opacity(0.36), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Highlighted flight totals")
+    }
+}
+
+private struct TotalsChip: View {
+    var title: String
+    var value: String
+
+    init(_ title: String, _ value: String) {
+        self.title = title
+        self.value = value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(OpenPilotTheme.muted)
+                .lineLimit(1)
+            Text(value)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.050), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct FlightSelectionTotals {
+    var totalMinutes = 0
+    var picMinutes = 0
+    var picusMinutes = 0
+    var copilotMinutes = 0
+    var nightMinutes = 0
+    var instrumentMinutes = 0
+    var crossCountryMinutes = 0
+    var fstdMinutes = 0
+    var totalTakeoffs = 0
+    var totalLandings = 0
+    var pilotFlyingCount = 0
+    var distanceNM: Double = 0
+
+    init(flights: [FlightEntry]) {
+        totalMinutes = flights.reduce(0) { $0 + $1.totalMinutes }
+        picMinutes = flights.reduce(0) { $0 + $1.picMinutes }
+        picusMinutes = flights.reduce(0) { $0 + $1.picusMinutes }
+        copilotMinutes = flights.reduce(0) { $0 + $1.copilotMinutes }
+        nightMinutes = flights.reduce(0) { $0 + $1.nightMinutes }
+        instrumentMinutes = flights.reduce(0) { $0 + $1.instrumentMinutes }
+        crossCountryMinutes = flights.reduce(0) { $0 + $1.crossCountryMinutes }
+        fstdMinutes = flights.reduce(0) { $0 + $1.fstdMinutes }
+        totalTakeoffs = flights.reduce(0) { $0 + $1.totalTakeoffs }
+        totalLandings = flights.reduce(0) { $0 + $1.totalLandings }
+        pilotFlyingCount = flights.filter(\.pilotFlying).count
+        distanceNM = flights.reduce(0) { $0 + $1.distanceNM }
     }
 }
 

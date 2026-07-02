@@ -7,19 +7,31 @@ struct WorldSceneView: NSViewRepresentable {
     var routeLimit: Int = 700
     var allowsCameraControl: Bool = true
     var cameraDistance: Float = 7
+    var showAirports: Bool = false
+    var airportLimit: Int = 600
 
     func makeNSView(context: Context) -> SCNView {
-        let view = SCNView()
+        let view = AirportHoverSceneView()
+        view.prepareAirportHover()
         view.allowsCameraControl = allowsCameraControl
         view.autoenablesDefaultLighting = true
         view.backgroundColor = NSColor(red: 0.025, green: 0.040, blue: 0.055, alpha: 1)
+        configureCameraControls(for: view)
         view.scene = buildScene()
         return view
     }
 
     func updateNSView(_ nsView: SCNView, context: Context) {
         nsView.allowsCameraControl = allowsCameraControl
+        configureCameraControls(for: nsView)
         nsView.scene = buildScene()
+    }
+
+    private func configureCameraControls(for view: SCNView) {
+        view.defaultCameraController.interactionMode = .orbitTurntable
+        view.defaultCameraController.inertiaEnabled = true
+        view.defaultCameraController.automaticTarget = true
+        view.defaultCameraController.inertiaFriction = 0.045
     }
 
     private func buildScene() -> SCNScene {
@@ -47,6 +59,9 @@ struct WorldSceneView: NSViewRepresentable {
         addGrid(to: scene)
         for route in routes.prefix(routeLimit) {
             addArc(route, to: scene)
+        }
+        if showAirports {
+            addAirportMarkers(to: scene)
         }
 
         let ambient = SCNLight()
@@ -109,6 +124,35 @@ struct WorldSceneView: NSViewRepresentable {
         scene.rootNode.addChildNode(node)
     }
 
+    private func addAirportMarkers(to scene: SCNScene) {
+        for airport in airportMarkers.prefix(airportLimit) {
+            let marker = SCNSphere(radius: 0.027)
+            marker.segmentCount = 16
+            let material = SCNMaterial()
+            material.diffuse.contents = NSColor.systemOrange.withAlphaComponent(0.96)
+            material.emission.contents = NSColor.systemOrange.withAlphaComponent(0.62)
+            material.specular.contents = NSColor.white.withAlphaComponent(0.30)
+            marker.materials = [material]
+
+            let node = SCNNode(geometry: marker)
+            node.name = "airport:\(airport.code)|\(airport.name)"
+            node.position = point(lat: airport.latitude, lon: airport.longitude, radius: 2.095)
+            scene.rootNode.addChildNode(node)
+
+            let halo = SCNSphere(radius: 0.044)
+            halo.segmentCount = 16
+            let haloMaterial = SCNMaterial()
+            haloMaterial.diffuse.contents = NSColor.systemOrange.withAlphaComponent(0.16)
+            haloMaterial.emission.contents = NSColor.systemOrange.withAlphaComponent(0.18)
+            haloMaterial.blendMode = .add
+            halo.materials = [haloMaterial]
+            let haloNode = SCNNode(geometry: halo)
+            haloNode.name = node.name
+            haloNode.position = node.position
+            scene.rootNode.addChildNode(haloNode)
+        }
+    }
+
     private func addPolyline(_ points: [SCNVector3], color: NSColor, to scene: SCNScene) {
         guard points.count >= 2 else { return }
         let source = SCNGeometrySource(vertices: points)
@@ -155,6 +199,40 @@ struct WorldSceneView: NSViewRepresentable {
         let scaleA = sin((1 - t) * omega) / sinOmega
         let scaleB = sin(t * omega) / sinOmega
         return SCNVector3(an.x * scaleA + bn.x * scaleB, an.y * scaleA + bn.y * scaleB, an.z * scaleA + bn.z * scaleB)
+    }
+
+    private var airportMarkers: [AirportMarker] {
+        var seen = Set<String>()
+        var markers: [AirportMarker] = []
+
+        func add(_ code: String, latitude: Double, longitude: Double) {
+            let fallbackCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !fallbackCode.isEmpty else { return }
+            let airport = AirportCoordinateService.shared.airport(for: fallbackCode)
+            let displayCode = airport?.displayCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? fallbackCode
+            let key = airport?.identifier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? fallbackCode
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            markers.append(AirportMarker(
+                code: displayCode,
+                name: airport?.name ?? fallbackCode,
+                latitude: airport?.latitude ?? latitude,
+                longitude: airport?.longitude ?? longitude
+            ))
+        }
+
+        for route in routes.prefix(routeLimit) {
+            add(route.departure, latitude: route.departureLatitude, longitude: route.departureLongitude)
+            add(route.arrival, latitude: route.arrivalLatitude, longitude: route.arrivalLongitude)
+        }
+        return markers
+    }
+
+    private struct AirportMarker {
+        var code: String
+        var name: String
+        var latitude: Double
+        var longitude: Double
     }
 
     private static let earthTexture: Any = {
@@ -220,5 +298,80 @@ struct WorldSceneView: NSViewRepresentable {
 
     private static func y(forLatitude latitude: Double, height: CGFloat) -> CGFloat {
         ((latitude + 90) / 180) * height
+    }
+}
+
+private final class AirportHoverSceneView: SCNView {
+    private let airportTooltip = NSTextField(labelWithString: "")
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    func prepareAirportHover() {
+        guard airportTooltip.superview == nil else { return }
+        airportTooltip.isHidden = true
+        airportTooltip.wantsLayer = true
+        airportTooltip.layer?.cornerRadius = 8
+        airportTooltip.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        airportTooltip.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        airportTooltip.layer?.borderWidth = 1
+        airportTooltip.textColor = .white
+        airportTooltip.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+        airportTooltip.alignment = .center
+        airportTooltip.lineBreakMode = .byTruncatingTail
+        airportTooltip.setContentHuggingPriority(.required, for: .horizontal)
+        addSubview(airportTooltip)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let options: NSTrackingArea.Options = [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let point = convert(event.locationInWindow, from: nil)
+        guard let label = airportLabel(at: point) else {
+            airportTooltip.isHidden = true
+            return
+        }
+        airportTooltip.stringValue = label
+        airportTooltip.sizeToFit()
+        let width = min(max(airportTooltip.frame.width + 18, 58), 240)
+        let height: CGFloat = 28
+        let x = min(max(point.x + 12, 8), bounds.width - width - 8)
+        let y = min(max(point.y + 14, 8), bounds.height - height - 8)
+        airportTooltip.frame = CGRect(x: x, y: y, width: width, height: height)
+        airportTooltip.isHidden = false
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        airportTooltip.isHidden = true
+    }
+
+    private func airportLabel(at point: CGPoint) -> String? {
+        let hits = hitTest(point, options: [
+            SCNHitTestOption.firstFoundOnly: true,
+            SCNHitTestOption.boundingBoxOnly: false
+        ])
+        for hit in hits {
+            var node: SCNNode? = hit.node
+            while let current = node {
+                if let name = current.name, name.hasPrefix("airport:") {
+                    let payload = String(name.dropFirst("airport:".count))
+                    let pieces = payload.split(separator: "|", maxSplits: 1).map(String.init)
+                    return pieces.first
+                }
+                node = current.parent
+            }
+        }
+        return nil
     }
 }

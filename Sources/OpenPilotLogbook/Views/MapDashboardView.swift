@@ -3,6 +3,8 @@ import OpenPilotLogbookCore
 
 struct MapDashboardView: View {
     @ObservedObject var store: LogbookStore
+    @State private var showAirports = true
+    private let renderedRouteLimit = 1_200
     private var isSnapshot: Bool {
         ProcessInfo.processInfo.environment["OPENPILOT_SNAPSHOT_PATH"] != nil
     }
@@ -20,19 +22,30 @@ struct MapDashboardView: View {
                             .foregroundStyle(OpenPilotTheme.muted)
                     }
                     Spacer()
+                    Toggle(isOn: $showAirports) {
+                        Label("Airports", systemImage: "mappin.and.ellipse")
+                    }
+                    .toggleStyle(.switch)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
+                            .stroke(OpenPilotTheme.border, lineWidth: 1)
+                    }
                     if !store.selectedRouteFlightIDs.isEmpty {
                         Button("Show All Routes") {
                             store.showAllRoutes()
                         }
                         .buttonStyle(.bordered)
                     }
-                    MapOverlayMetric(title: "Mapped NM", value: String(format: "%.0f", store.visibleRoutes.reduce(0) { $0 + $1.distanceNM }), systemImage: "globe.europe.africa")
-                    MapOverlayMetric(title: "Routes", value: store.visibleRoutes.count.formatted(), systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                    MapOverlayMetric(title: store.selectedRouteFlightIDs.isEmpty ? "Total NM" : "Selected NM", value: String(format: "%.0f", routeDistanceNM), systemImage: "globe.europe.africa")
+                    MapOverlayMetric(title: "Shown", value: shownRouteText, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 }
                 Spacer()
                 HStack {
                     Spacer()
-                    Label("NASA Blue Marble", systemImage: "globe")
+                    Label("Drag to rotate. Scroll to zoom. Hover airport dots for IATA codes.", systemImage: "globe")
                         .font(.caption.weight(.medium))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
@@ -50,10 +63,10 @@ struct MapDashboardView: View {
     @ViewBuilder
     private var globeSurface: some View {
         if isSnapshot {
-            BlueMarbleGlobeCanvas(routes: store.visibleRoutes)
+            BlueMarbleGlobeCanvas(routes: store.visibleRoutes, showAirports: showAirports)
                 .ignoresSafeArea()
         } else {
-            WorldSceneView(routes: store.visibleRoutes, routeLimit: 1_200, cameraDistance: 5.8)
+            WorldSceneView(routes: store.visibleRoutes, routeLimit: renderedRouteLimit, cameraDistance: 5.8, showAirports: showAirports)
                 .ignoresSafeArea()
         }
         LinearGradient(
@@ -70,13 +83,28 @@ struct MapDashboardView: View {
 
     private var routeSubtitle: String {
         if store.selectedRouteFlightIDs.isEmpty {
-            return "\(store.visibleRoutes.count.formatted()) geocoded routes"
+            return "\(store.visibleRoutes.count.formatted()) geocoded routes from \(store.summary.flightCount.formatted()) flights"
         }
         if store.visibleRoutes.count == 1 {
             let route = store.visibleRoutes[0]
             return "Selected route \(route.departure) -> \(route.arrival)"
         }
         return "\(store.visibleRoutes.count.formatted()) selected routes"
+    }
+
+    private var routeDistanceNM: Double {
+        if store.selectedRouteFlightIDs.isEmpty {
+            return store.summary.distanceNM
+        }
+        return store.visibleRoutes.reduce(0) { $0 + $1.distanceNM }
+    }
+
+    private var shownRouteText: String {
+        let shown = min(store.visibleRoutes.count, renderedRouteLimit)
+        if shown == store.visibleRoutes.count {
+            return shown.formatted()
+        }
+        return "\(shown.formatted())/\(store.visibleRoutes.count.formatted())"
     }
 }
 
@@ -110,6 +138,7 @@ private struct MapOverlayMetric: View {
 
 struct BlueMarbleGlobeCanvas: View {
     var routes: [MapRoute]
+    var showAirports = false
     private let centerLongitude = 22.0
     private let centerLatitude = 16.0
 
@@ -134,6 +163,9 @@ struct BlueMarbleGlobeCanvas: View {
             drawBlueMarble(context: &globeContext, center: center, radius: radius)
             drawGraticule(context: &globeContext, center: center, radius: radius)
             drawRoutes(context: &globeContext, center: center, radius: radius)
+            if showAirports {
+                drawAirports(context: &globeContext, center: center, radius: radius)
+            }
 
             context.fill(Path(ellipseIn: globeRect), with: .radialGradient(
                 Gradient(colors: [
@@ -207,6 +239,43 @@ struct BlueMarbleGlobeCanvas: View {
             context.fill(Path(ellipseIn: CGRect(x: start.x - 2, y: start.y - 2, width: 4, height: 4)), with: .color(.white.opacity(0.70)))
             context.fill(Path(ellipseIn: CGRect(x: end.x - 2, y: end.y - 2, width: 4, height: 4)), with: .color(.white.opacity(0.70)))
         }
+    }
+
+    private func drawAirports(context: inout GraphicsContext, center: CGPoint, radius: CGFloat) {
+        for airport in airportMarkers.prefix(240) {
+            guard let point = project(latitude: airport.latitude, longitude: airport.longitude, center: center, radius: radius) else { continue }
+            context.fill(Path(ellipseIn: CGRect(x: point.x - 3.2, y: point.y - 3.2, width: 6.4, height: 6.4)), with: .color(OpenPilotTheme.amber.opacity(0.92)))
+            context.stroke(Path(ellipseIn: CGRect(x: point.x - 6.5, y: point.y - 6.5, width: 13, height: 13)), with: .color(OpenPilotTheme.amber.opacity(0.22)), lineWidth: 1.2)
+        }
+    }
+
+    private var airportMarkers: [AirportMarker] {
+        var seen = Set<String>()
+        var markers: [AirportMarker] = []
+
+        func add(_ code: String, latitude: Double, longitude: Double) {
+            let fallbackCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !fallbackCode.isEmpty else { return }
+            let airport = AirportCoordinateService.shared.airport(for: fallbackCode)
+            let key = airport?.identifier.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? fallbackCode
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            markers.append(AirportMarker(
+                latitude: airport?.latitude ?? latitude,
+                longitude: airport?.longitude ?? longitude
+            ))
+        }
+
+        for route in routes.prefix(700) {
+            add(route.departure, latitude: route.departureLatitude, longitude: route.departureLongitude)
+            add(route.arrival, latitude: route.arrivalLatitude, longitude: route.arrivalLongitude)
+        }
+        return markers
+    }
+
+    private struct AirportMarker {
+        var latitude: Double
+        var longitude: Double
     }
 
     private func project(latitude: Double, longitude: Double, center: CGPoint, radius: CGFloat) -> CGPoint? {
