@@ -1,0 +1,61 @@
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserdata/
+
+# App bundles and local build artifacts
+dist/
+*.app/
+*.dSYM/
+
+# Generated QA output
+.codex/
+outputs/
+tmp/
+work/
+
+# Private logbook data: never commit these
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.sql
+*.sql-*
+LogTenCoreDataStore*
+OpenPilotLogbook.sqlite*
+Blackbox-working-backup-*.sqlite
+Blackbox-pre-restore-*.sqlite
+*.blackboxbackup
+Blackbox_Encrypted_Backup_*.manifest.json
+LogTenPro_Backup*/
+
+# Imported personal documents
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.tiff
+*.csv
+*.xlsx
+*.numbers
+
+# Keep project icon assets despite the broad image rules above
+!Sources/OpenPilotLogbook/Assets/
+!Sources/OpenPilotLogbook/Assets/**
+!Sources/OpenPilotLogbookCore/Resources/earth-blue-marble.jpg
+!Sources/OpenPilotLogbookCore/Resources/airports.csv
+
+# macOS
+.DS_Store
+*.icloud
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision

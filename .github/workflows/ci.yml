@@ -1,0 +1,33 @@
+name: Swift CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Unit tests
+        run: swift run OpenPilotLogbookCoreUnitTests
+
+      - name: Smoke tests
+        run: swift run OpenPilotLogbookCoreSmokeTests
+
+      - name: In-app snapshot checker
+        run: ./script/build_and_run.sh --check
+
+      - name: Private data guard
+        run: |
+          ! git ls-files \
+            | grep -Ev '^Sources/OpenPilotLogbookCore/Resources/airports\.csv$' \
+            | grep -Ev '^Sources/CSQLite/module\.modulemap$' \
+            | grep -Ev '^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\.swift$' \
+            | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
