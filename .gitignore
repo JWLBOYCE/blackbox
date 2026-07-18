@@ -36,6 +36,9 @@ LogTenPro_Backup*/
 *.jpg
 *.jpeg
 *.png
+!docs/assets/dashboard.jpg
+!docs/assets/map.jpg
+!docs/assets/analysis.jpg
 *.heic
 *.tiff
 *.csv

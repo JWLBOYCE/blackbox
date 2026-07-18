@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="520" viewBox="0 0 1440 520" role="img" aria-labelledby="title description">
+  <title id="title">Blackbox</title>
+  <description id="description">A privacy-first native flight logbook for macOS</description>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07131e"/>
+      <stop offset="0.52" stop-color="#0b2635"/>
+      <stop offset="1" stop-color="#05090f"/>
+    </linearGradient>
+    <radialGradient id="globe" cx="35%" cy="28%" r="75%">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="0.55" stop-color="#0e7490"/>
+      <stop offset="1" stop-color="#082f49"/>
+    </radialGradient>
+    <linearGradient id="route" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67e8f9" stop-opacity=".25"/>
+      <stop offset=".55" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#93c5fd" stop-opacity=".45"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="globeClip"><circle cx="1165" cy="278" r="218"/></clipPath>
+  </defs>
+
+  <rect width="1440" height="520" rx="28" fill="url(#bg)"/>
+  <circle cx="110" cy="72" r="190" fill="#0ea5e9" opacity=".05"/>
+  <circle cx="720" cy="560" r="330" fill="#2563eb" opacity=".06"/>
+
+  <g opacity=".18" stroke="#bae6fd" stroke-width="1">
+    <path d="M0 104H1440M0 208H1440M0 312H1440M0 416H1440"/>
+    <path d="M120 0V520M360 0V520M600 0V520M840 0V520M1080 0V520M1320 0V520"/>
+  </g>
+
+  <g transform="translate(92 79)">
+    <rect width="72" height="72" rx="18" fill="#2563eb"/>
+    <path d="M18 41.5 51.5 20c3.4-2.2 6.5 2.3 3.5 5L41 37.2l8 18.3-5.5 3-12.8-14.2-9.2 6.4-1.1 8.2-4.4 2.3-2.6-12.9Z" fill="#fff"/>
+  </g>
+
+  <text x="92" y="230" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="82" font-weight="720" letter-spacing="-3">Blackbox</text>
+  <text x="96" y="286" fill="#bae6fd" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="25" font-weight="520" letter-spacing=".3">YOUR FLYING. YOUR MAC. YOUR DATA.</text>
+  <text x="96" y="347" fill="#dbeafe" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="21">
+    <tspan x="96" dy="0">A private, CAA-ready flight record workspace</tspan>
+    <tspan x="96" dy="32">built natively for professional pilots.</tspan>
+  </text>
+
+  <g transform="translate(96 421)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="15" font-weight="600">
+    <rect width="134" height="39" rx="19.5" fill="#fff" opacity=".08" stroke="#fff" stroke-opacity=".15"/>
+    <circle cx="22" cy="19.5" r="5" fill="#4ade80"/>
+    <text x="36" y="25" fill="#e2e8f0">LOCAL-FIRST</text>
+    <rect x="148" width="154" height="39" rx="19.5" fill="#fff" opacity=".08" stroke="#fff" stroke-opacity=".15"/>
+    <text x="169" y="25" fill="#e2e8f0">NATIVE SWIFTUI</text>
+    <rect x="316" width="137" height="39" rx="19.5" fill="#fff" opacity=".08" stroke="#fff" stroke-opacity=".15"/>
+    <text x="337" y="25" fill="#e2e8f0">MACOS 14+</text>
+  </g>
+
+  <circle cx="1165" cy="278" r="222" fill="#38bdf8" opacity=".15" filter="url(#glow)"/>
+  <circle cx="1165" cy="278" r="218" fill="url(#globe)" stroke="#67e8f9" stroke-opacity=".45" stroke-width="2"/>
+  <g clip-path="url(#globeClip)" fill="none" stroke="#bae6fd" stroke-opacity=".18">
+    <ellipse cx="1165" cy="278" rx="122" ry="218"/>
+    <ellipse cx="1165" cy="278" rx="52" ry="218"/>
+    <path d="M947 278h436M968 188h394M968 368h394"/>
+  </g>
+  <g clip-path="url(#globeClip)" fill="#0f766e" opacity=".82">
+    <path d="M1023 123c45-14 80-10 110 7l19 36-28 25-19 42-38 8-29-32-40-16 7-42Z"/>
+    <path d="M1119 234l57-21 55 17 17 48-31 34-12 67-44 48-21-73-37-37Z"/>
+    <path d="m1247 168 72 19 49 51-23 39-61-8-27-40Z"/>
+  </g>
+  <g fill="none" stroke="url(#route)" stroke-width="3" filter="url(#glow)">
+    <path d="M1020 254Q1127 148 1279 231"/>
+    <path d="M1038 319Q1165 198 1310 314"/>
+    <path d="M1080 386Q1165 275 1257 179"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="1020" cy="254" r="5"/><circle cx="1279" cy="231" r="5"/>
+    <circle cx="1038" cy="319" r="5"/><circle cx="1310" cy="314" r="5"/>
+    <circle cx="1080" cy="386" r="5"/><circle cx="1257" cy="179" r="5"/>
+  </g>
+</svg>
