@@ -1,7 +1,9 @@
 import Foundation
 
 public enum SolarDayNightCalculator {
-    /// UK CAA night runs from the end of evening civil twilight to the beginning of morning civil twilight.
+    /// Blackbox's configurable night suggestion samples solar elevation along
+    /// the recorded route. It is an internal calculation, not regulatory
+    /// certification, and never changes an entry without explicit acceptance.
     public static let civilTwilightElevation = -6.0
 
     public static func nightMinutes(

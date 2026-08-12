@@ -13,60 +13,218 @@ struct MapDashboardView: View {
         ZStack(alignment: .topLeading) {
             globeSurface
 
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("3D Route Map")
-                            .font(.system(size: 34, weight: .semibold))
-                        Text(routeSubtitle)
-                            .foregroundStyle(OpenPilotTheme.muted)
+            GeometryReader { geometry in
+                let isCompact = geometry.size.width < 1_050
+
+                VStack(alignment: .leading, spacing: 16) {
+                    mapControlPanel(isCompact: isCompact)
+                    Spacer(minLength: 16)
+                    HStack {
+                        Spacer()
+                        bottomControls
                     }
-                    Spacer()
-                    Toggle(isOn: $showAirports) {
-                        Label("Airports", systemImage: "mappin.and.ellipse")
-                    }
-                    .toggleStyle(.switch)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
-                            .stroke(OpenPilotTheme.border, lineWidth: 1)
-                    }
-                    if !store.selectedRouteFlightIDs.isEmpty {
-                        Button("Show All Routes") {
-                            store.showAllRoutes()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    MapOverlayMetric(title: store.selectedRouteFlightIDs.isEmpty ? "Total NM" : "Selected NM", value: String(format: "%.0f", routeDistanceNM), systemImage: "globe.europe.africa")
-                    MapOverlayMetric(title: "Shown", value: shownRouteText, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
                 }
-                Spacer()
-                HStack {
-                    Spacer()
-                    Label("Drag to rotate. Scroll to zoom. Hover airport dots for IATA codes.", systemImage: "globe")
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
+                .padding(isCompact ? 16 : 24)
             }
-            .padding(24)
         }
         .navigationTitle("3D Map")
         .accessibilityElement(children: .contain)
         .accessibilityLabel("3D route map")
         .accessibilityValue(routeSubtitle)
+        .accessibilityIdentifier("map.screen")
+    }
+
+    @ViewBuilder
+    private func mapControlPanel(isCompact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: isCompact ? 12 : 10) {
+            if isCompact {
+                FlightFilterBar(query: store.flightQuery, resultCount: store.flights.count, reset: store.resetFlightFilters)
+                HStack(alignment: .top, spacing: 12) {
+                    mapTitle
+                    Spacer(minLength: 8)
+                    queryEditor
+                }
+                Divider()
+                compactControlGrid
+            } else {
+                HStack(spacing: 12) {
+                    FlightFilterBar(query: store.flightQuery, resultCount: store.flights.count, reset: store.resetFlightFilters)
+                    Spacer(minLength: 12)
+                    queryEditor
+                }
+                Divider()
+                regularControlRow
+            }
+        }
+        .padding(isCompact ? 14 : 16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner + 2))
+        .overlay {
+            RoundedRectangle(cornerRadius: OpenPilotTheme.corner + 2)
+                .stroke(OpenPilotTheme.border, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("map.controls")
+    }
+
+    private var regularControlRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            mapTitle
+                .frame(width: 220, alignment: .leading)
+            Spacer(minLength: 8)
+            rangePicker
+                .frame(width: 120)
+            aircraftPicker
+                .frame(width: 140)
+            typePicker
+                .frame(width: 120)
+            airportsToggle
+            showAllRoutesButton
+            distanceMetric
+            shownMetric
+        }
+    }
+
+    private var compactControlGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 150, maximum: 210), spacing: 10, alignment: .leading)],
+            alignment: .leading,
+            spacing: 10
+        ) {
+            rangePicker
+                .frame(maxWidth: .infinity)
+            aircraftPicker
+                .frame(maxWidth: .infinity)
+            typePicker
+                .frame(maxWidth: .infinity)
+            airportsToggle
+                .frame(maxWidth: .infinity)
+            showAllRoutesButton
+                .frame(maxWidth: .infinity, alignment: .leading)
+            distanceMetric
+                .frame(maxWidth: .infinity)
+            shownMetric
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var mapTitle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("3D Route Map")
+                .pageTitleStyle()
+            Text(routeSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(OpenPilotTheme.muted)
+                .lineLimit(2)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var queryEditor: some View {
+        FlightQueryEditor(
+            query: store.flightQuery,
+            aircraftIDs: store.availableAircraftIDs,
+            aircraftTypes: store.availableAircraftTypes,
+            pilotFunctions: store.availablePilotFunctions,
+            operations: store.availableOperations,
+            entryKinds: store.availableEntryKinds,
+            apply: { store.applyFlightQuery($0) }
+        )
+    }
+
+    private var rangePicker: some View {
+        Picker("Range", selection: rangeBinding) {
+            ForEach(MapRange.allCases) { Text($0.title).tag($0) }
+        }
+        .accessibilityIdentifier("map.filter.range")
+    }
+
+    private var aircraftPicker: some View {
+        Picker("Aircraft", selection: aircraftBinding) {
+            Text("All Aircraft").tag("All Aircraft")
+            ForEach(Array(Set(store.routes.map(\.aircraftID))).filter { !$0.isEmpty }.sorted(), id: \.self) { Text($0).tag($0) }
+        }
+        .accessibilityIdentifier("map.filter.aircraft")
+    }
+
+    private var typePicker: some View {
+        Picker("Type", selection: typeBinding) {
+            Text("All Types").tag("All Types")
+            ForEach(Array(Set(store.routes.map(\.entryKind))).sorted(), id: \.self) { Text($0).tag($0) }
+        }
+        .accessibilityIdentifier("map.filter.type")
+    }
+
+    private var airportsToggle: some View {
+        Toggle(isOn: $showAirports) {
+            Label("Airports", systemImage: "mappin.and.ellipse")
+        }
+        .toggleStyle(.switch)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
+        .overlay {
+            RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
+                .stroke(OpenPilotTheme.border, lineWidth: 1)
+        }
+        .accessibilityIdentifier("map.filter.airports")
+    }
+
+    @ViewBuilder
+    private var showAllRoutesButton: some View {
+        if !store.selectedRouteFlightIDs.isEmpty {
+            Button("Show All Routes") {
+                store.showAllRoutes()
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("map.showAllRoutes")
+        }
+    }
+
+    private var distanceMetric: some View {
+        MapOverlayMetric(
+            title: store.selectedRouteFlightIDs.isEmpty ? "Total NM" : "Selected NM",
+            value: String(format: "%.0f", routeDistanceNM),
+            systemImage: "globe.europe.africa"
+        )
+    }
+
+    private var shownMetric: some View {
+        MapOverlayMetric(title: "Shown", value: shownRouteText, systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+    }
+
+    private var bottomControls: some View {
+        HStack(spacing: 10) {
+            Menu {
+                ForEach(filteredRoutes.prefix(20)) { route in
+                    Button("\(route.departure) → \(route.arrival) · \(LogbookFormatters.dateFormatter.string(from: route.date))") {
+                        store.showFlight(id: route.id)
+                    }
+                    .accessibilityIdentifier("map.route.\(route.id)")
+                }
+            } label: {
+                Label("Open a shown flight", systemImage: "list.bullet")
+            }
+            .accessibilityIdentifier("map.openFlight")
+            Label("Drag to rotate. Scroll to zoom.", systemImage: "globe")
+                .font(.caption.weight(.medium))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
+        .overlay {
+            RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
+                .stroke(OpenPilotTheme.border, lineWidth: 1)
+        }
     }
 
     @ViewBuilder
     private var globeSurface: some View {
         if isSnapshot {
-            BlueMarbleGlobeCanvas(routes: store.visibleRoutes, showAirports: showAirports)
+            BlueMarbleGlobeCanvas(routes: filteredRoutes, showAirports: showAirports)
                 .ignoresSafeArea()
         } else {
-            WorldSceneView(routes: store.visibleRoutes, routeLimit: renderedRouteLimit, cameraDistance: 5.8, showAirports: showAirports)
+            WorldSceneView(routes: filteredRoutes, routeLimit: renderedRouteLimit, cameraDistance: 5.8, showAirports: showAirports)
                 .ignoresSafeArea()
         }
         LinearGradient(
@@ -84,29 +242,72 @@ struct MapDashboardView: View {
 
     private var routeSubtitle: String {
         if store.selectedRouteFlightIDs.isEmpty {
-            return "\(store.visibleRoutes.count.formatted()) geocoded routes from \(store.summary.flightCount.formatted()) flights"
+            return "\(filteredRoutes.count.formatted()) filtered geocoded routes from \(store.flights.count.formatted()) flights"
         }
-        if store.visibleRoutes.count == 1 {
-            let route = store.visibleRoutes[0]
+        if filteredRoutes.count == 1 {
+            let route = filteredRoutes[0]
             return "Selected route \(route.departure) -> \(route.arrival)"
         }
-        return "\(store.visibleRoutes.count.formatted()) selected routes"
+        return "\(filteredRoutes.count.formatted()) selected routes"
     }
 
     private var routeDistanceNM: Double {
         if store.selectedRouteFlightIDs.isEmpty {
-            return store.summary.distanceNM
+            return store.flights.reduce(0) { $0 + $1.distanceNM }
         }
-        return store.visibleRoutes.reduce(0) { $0 + $1.distanceNM }
+        return filteredRoutes.reduce(0) { $0 + $1.distanceNM }
     }
 
     private var shownRouteText: String {
-        let shown = min(store.visibleRoutes.count, renderedRouteLimit)
-        if shown == store.visibleRoutes.count {
+        let shown = min(filteredRoutes.count, renderedRouteLimit)
+        if shown == filteredRoutes.count {
             return shown.formatted()
         }
-        return "\(shown.formatted())/\(store.visibleRoutes.count.formatted())"
+        return "\(shown.formatted())/\(filteredRoutes.count.formatted())"
     }
+
+    private var filteredRoutes: [MapRoute] {
+        let queryFlightIDs = Set(store.flights.compactMap(\.id))
+        return store.visibleRoutes.filter { queryFlightIDs.contains($0.id) }
+    }
+
+    private var rangeBinding: Binding<MapRange> {
+        Binding(get: {
+            guard let start = store.flightQuery.startDate else { return .all }
+            let days = Calendar.current.dateComponents([.day], from: start, to: Date()).day ?? 0
+            return days <= 95 ? .ninetyDays : .twelveMonths
+        }, set: { range in
+            var query = store.flightQuery
+            switch range {
+            case .all: query.startDate = nil; query.endDate = nil
+            case .ninetyDays: query.startDate = Calendar.current.date(byAdding: .day, value: -90, to: Date()); query.endDate = Date()
+            case .twelveMonths: query.startDate = Calendar.current.date(byAdding: .year, value: -1, to: Date()); query.endDate = Date()
+            }
+            store.applyFlightQuery(query)
+        })
+    }
+
+    private var aircraftBinding: Binding<String> {
+        Binding(get: { store.flightQuery.aircraftIDs.first ?? "All Aircraft" }, set: { aircraft in
+            var query = store.flightQuery
+            query.aircraftIDs = aircraft == "All Aircraft" ? [] : [aircraft]
+            store.applyFlightQuery(query)
+        })
+    }
+
+    private var typeBinding: Binding<String> {
+        Binding(get: { store.flightQuery.entryKinds.first ?? "All Types" }, set: { type in
+            var query = store.flightQuery
+            query.entryKinds = type == "All Types" ? [] : [type]
+            store.applyFlightQuery(query)
+        })
+    }
+}
+
+private enum MapRange: String, CaseIterable, Identifiable {
+    case all, ninetyDays, twelveMonths
+    var id: String { rawValue }
+    var title: String { self == .all ? "All time" : (self == .ninetyDays ? "90 days" : "12 months") }
 }
 
 private struct MapOverlayMetric: View {

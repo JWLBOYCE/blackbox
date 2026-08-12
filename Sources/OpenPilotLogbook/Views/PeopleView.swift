@@ -26,7 +26,7 @@ struct PeopleView: View {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("People")
-                        .font(.system(size: 30, weight: .semibold))
+                        .pageTitleStyle()
                     Text("Select someone to review every sector flown together.")
                         .foregroundStyle(OpenPilotTheme.muted)
                 }
@@ -52,6 +52,7 @@ struct PeopleView: View {
                 .frame(minWidth: 420, idealWidth: 520)
         }
         .navigationTitle("People")
+        .accessibilityIdentifier("people.screen")
         .onAppear {
             if selection == nil { selection = sortedPeople.first?.id }
         }

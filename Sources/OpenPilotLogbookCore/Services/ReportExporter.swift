@@ -2,6 +2,9 @@ import Foundation
 
 public enum ReportExporter {
     public static func exportCAAResources(flights: [FlightEntry], summary: LogbookSummary, to folder: URL) throws -> (csv: URL, html: URL) {
+        let flights = flights.filter { $0.recordState == .finalised }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let summary = LogbookSummary(flights: flights)
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let csvURL = folder.appendingPathComponent("CAA_Logbook_Export_\(stamp).csv")
         let htmlURL = folder.appendingPathComponent("CAA_Logbook_Printable_\(stamp).html")
@@ -144,7 +147,7 @@ public enum ReportExporter {
         </head>
         <body>
           <h1>CAA Pilot Logbook Export</h1>
-          <p>Electronic/printable pilot logbook copy.</p>
+          <p>Electronic/printable pilot logbook copy. This CAA-format report is generated from finalised active records and is not regulatory certification.</p>
           <div class="meta">
             <strong>Flights</strong><span>\(summary.flightCount)</span>
             <strong>Total time</strong><span>\(LogbookFormatters.hours(summary.totalMinutes))</span>

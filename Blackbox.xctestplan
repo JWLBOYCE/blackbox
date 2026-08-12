@@ -1,0 +1,248 @@
+{
+  "configurations" : [
+    {
+      "id" : "A39E54B7-BC13-43AE-9105-AF0C0B6DBEA0",
+      "name" : "Light Regular",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "light"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "1440"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "980"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "D2F1474D-318E-4E58-A7B8-D56415196B70",
+      "name" : "Light Compact",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "light"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "900"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "800"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "73AC3530-552C-464B-985B-F0029F80766E",
+      "name" : "Dark Regular",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "dark"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "1440"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "980"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "9B0EA61B-FDE8-4193-AEF4-4016E16B2499",
+      "name" : "Dark Compact",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "dark"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "900"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "800"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "6028CD9D-0ED3-4486-BFB7-BA3A4367AE12",
+      "name" : "Increase Contrast Regular",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "contrast"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_INCREASE_CONTRAST",
+            "value" : "1"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "1440"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "980"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "EF3B21DA-62D1-49C4-96DB-8CD638822045",
+      "name" : "Increase Contrast Compact",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "contrast"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_INCREASE_CONTRAST",
+            "value" : "1"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "900"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "800"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "7831C20F-F2BC-4070-A807-E2C0C5F25854",
+      "name" : "Large Text Reduced Motion",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "light"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_DYNAMIC_TYPE_SIZE",
+            "value" : "accessibility3"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_REDUCE_MOTION",
+            "value" : "1"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "1440"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "980"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Blackbox.xcodeproj",
+      "identifier" : "A00000000000000000000010",
+      "name" : "Blackbox"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blackbox.xcodeproj",
+        "identifier" : "A00000000000000000000012",
+        "name" : "BlackboxUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

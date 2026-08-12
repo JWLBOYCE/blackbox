@@ -19,6 +19,35 @@ func runUnitTests() throws {
     testRecencyAndDuplicates()
     testRosterPolicyIgnoresGroundDutiesAndNormalizesAirports()
     try testRepositoryAirportOverrideDuplicateAndComplianceGuidance()
+    try testFolderAccessStoreLifecycle()
+}
+
+func testFolderAccessStoreLifecycle() throws {
+    let suiteName = "Blackbox.FolderAccessStoreTests.\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+        expect(false, "isolated defaults suite should be available")
+        return
+    }
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let root = try makeTempDirectory()
+    let folder = root.appendingPathComponent("Exports", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let store = FolderAccessStore(defaults: defaults, keyPrefix: "Blackbox.test.folder", mode: .standard)
+
+    expect(store.resolve(.exports) == .missing, "an unset folder bookmark should be missing")
+    try store.remember(folder, for: .exports)
+    guard case .available(let resolved) = store.resolve(.exports) else {
+        expect(false, "a remembered folder should resolve")
+        return
+    }
+    expect(resolved.standardizedFileURL == folder.standardizedFileURL, "the resolved folder should match the selected destination")
+
+    try FileManager.default.removeItem(at: folder)
+    expect(store.resolve(.exports) == .stale, "a deleted bookmarked folder should require reselection")
+    store.forget(.exports)
+    expect(store.resolve(.exports) == .missing, "forget should clear a saved folder bookmark")
+    try? FileManager.default.removeItem(at: root)
 }
 
 func testHHMMExportsAndEscaping() throws {
@@ -155,7 +184,7 @@ func testRepositoryAirportOverrideDuplicateAndComplianceGuidance() throws {
         workingDatabase: temp.appendingPathComponent("OpenPilotLogbook.sqlite")
     )
     let repository = LogbookRepository(paths: paths)
-    try repository.createSchema(in: SQLiteConnection(path: paths.workingDatabase.path))
+    try repository.bootstrapIfNeeded()
     try repository.saveAirportOverride(AirportOverride(identifier: "ZZZZ", name: "Synthetic Airport", latitude: 10.25, longitude: 20.5))
     let overrides = try repository.airportOverrides()
     expect(overrides.first?.identifier == "ZZZZ", "airport override should persist")
@@ -171,14 +200,15 @@ func testRepositoryAirportOverrideDuplicateAndComplianceGuidance() throws {
         totalMinutes: 45,
         copilotMinutes: 45
     )
-    _ = try repository.save(flight)
-    _ = try repository.save(flight)
-    _ = try repository.save(FlightEntry(
+    _ = try repository.saveDraft(flight)
+    _ = try repository.saveDraft(flight)
+    _ = try repository.saveDraft(FlightEntry(
         date: utcDate(year: 2026, month: 7, day: 2),
         aircraftID: "A320#SIM",
         aircraftType: "FFS",
         entryKind: "Simulator",
-        totalMinutes: 120
+        totalMinutes: 120,
+        fstdMinutes: 120
     ))
     let summary = try repository.summary()
     expect(summary.totalMinutes == 90, "repository total should count flying time only")
@@ -186,7 +216,10 @@ func testRepositoryAirportOverrideDuplicateAndComplianceGuidance() throws {
     let duplicates = try repository.duplicateFlightGroups()
     expect(duplicates.count == 1, "repository duplicate groups should detect matching saved rows")
 
-    _ = try repository.save(FlightEntry(date: utcDate(year: 2026, month: 7, day: 2), totalMinutes: 0))
+    var incomplete = FlightEntry(date: utcDate(year: 2026, month: 7, day: 2), totalMinutes: 0)
+    let incompleteID = try repository.saveDraft(incomplete)
+    incomplete.id = incompleteID
+    _ = try repository.finalise(incomplete, acknowledgeWarnings: true)
     let compliance = try repository.complianceSnapshot()
     expect(compliance.issues.contains { !$0.guidance.isEmpty }, "compliance issues should include guidance")
 }

@@ -6,32 +6,64 @@ struct LogTenComparisonView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                statusStrip
-                totalsPanel
-                blackboxOnlyPanel
-                issuesPanel
+            Group {
+                switch store.logTenComparisonState {
+                case .idle:
+                    stateView(title: "Not Compared", message: "Choose Refresh to open the configured LogTen source read-only.", systemImage: "rectangle.split.2x1")
+                case .loading:
+                    stateView(title: "Comparing…", message: "Opening the source read-only and checking imported rows.", systemImage: "hourglass")
+                case .empty(let message):
+                    stateView(title: "Empty Source", message: message, systemImage: "tray")
+                case .unavailable(let message):
+                    stateView(title: "Source Unavailable", message: message, systemImage: "externaldrive.badge.questionmark")
+                case .failed(let message):
+                    stateView(title: "Comparison Failed", message: message, systemImage: "exclamationmark.triangle")
+                case .loaded:
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+                        statusStrip
+                        totalsPanel
+                        blackboxOnlyPanel
+                        issuesPanel
+                    }
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollContentBackground(.hidden)
         .navigationTitle("Compare")
+        .accessibilityIdentifier("comparison.screen")
         .onAppear {
-            if store.logTenComparison.logTen.flightCount == 0 {
+            if case .idle = store.logTenComparisonState {
                 store.refreshLogTenComparison()
             }
         }
     }
 
-    private var snapshot: LogTenComparisonSnapshot { store.logTenComparison }
+    private var snapshot: LogTenComparisonSnapshot {
+        if case .loaded(let snapshot) = store.logTenComparisonState { return snapshot }
+        return LogTenComparisonSnapshot()
+    }
+
+    private func stateView(title: String, message: String, systemImage: String) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("LogTen Comparison").pageTitleStyle()
+                Spacer()
+                Button("Refresh", action: store.refreshLogTenComparison).buttonStyle(.bordered)
+            }
+            EmptyStateBlock(title: title, message: message, systemImage: systemImage)
+                .frame(minHeight: 360)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
     private var header: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("LogTen Comparison")
-                    .font(.system(size: 34, weight: .semibold))
+                    .pageTitleStyle()
                 Text(snapshot.sourceIsLiveLogTen ? "Live LogTen Pro source, opened read-only." : "Backup LogTen source, opened read-only.")
                     .font(.callout)
                     .foregroundStyle(OpenPilotTheme.muted)

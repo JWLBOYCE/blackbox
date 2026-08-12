@@ -5,12 +5,24 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
-    runs-on: macos-15
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verify pinned Xcode
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          test "$(xcodebuild -version | sed -n '1p')" = "Xcode 26.6"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version 17F113"
 
       - name: Build
         run: swift build
@@ -18,11 +30,74 @@ jobs:
       - name: Unit tests
         run: swift run OpenPilotLogbookCoreUnitTests
 
+      - name: SwiftPM test suite
+        run: swift test
+
+      - name: Release performance gates
+        run: swift test -c release --filter fixedFixtureReleasePerformanceGates
+
       - name: Smoke tests
         run: swift run OpenPilotLogbookCoreSmokeTests
 
       - name: In-app snapshot checker
         run: ./script/build_and_run.sh --check
+
+      - name: Preserve principal-screen snapshot matrix
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-principal-screen-snapshots
+          path: outputs/check/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Xcode UI tests
+        if: ${{ hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
+        run: |
+          xcodebuild test \
+            -project Blackbox.xcodeproj \
+            -scheme Blackbox \
+            -testPlan Blackbox \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/Blackbox-DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/BlackboxUITests.xcresult"
+
+      - name: Preserve UI test diagnostics
+        if: ${{ always() && hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-XCUITest-results
+          path: ${{ runner.temp }}/BlackboxUITests.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Write synthetic verification report
+        if: ${{ always() }}
+        run: |
+          report="$RUNNER_TEMP/Blackbox-verification-report.md"
+          {
+            echo '# Blackbox synthetic verification report'
+            echo
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Runner: \`$RUNNER_OS $RUNNER_ARCH\`"
+            echo "- Xcode: \`$(xcodebuild -version | tr '\n' ' ' | sed 's/[[:space:]]*$//')\`"
+            echo '- Data policy: deterministic synthetic fixtures under runner temporary storage only.'
+            echo '- Apple credentials: none supplied to CI.'
+            echo '- Live Application Support database: unavailable to and untouched by the runner.'
+            echo '- Automated scope: core, smoke, snapshot, hosted UI, privacy, and unsigned-archive steps are recorded by their individual workflow conclusions and uploaded artifacts.'
+            echo '- Evidence rule: the presence of this report does not mean a failed, skipped, later, credential-dependent, or manual gate passed.'
+            echo '- Manual scope: keyboard-only and VoiceOver walkthroughs remain incomplete until a tester signs docs/ACCESSIBILITY_VERIFICATION.md.'
+            echo '- Distribution scope: Developer ID signing, notarization, stapling, Gatekeeper, and the final synthetic smoke launch are local credential-dependent gates and are not performed by CI.'
+          } > "$report"
+
+      - name: Preserve verification report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-synthetic-verification-report
+          path: ${{ runner.temp }}/Blackbox-verification-report.md
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Private data guard
         run: |
@@ -31,3 +106,112 @@ jobs:
             | grep -Ev '^Sources/CSQLite/module\.modulemap$' \
             | grep -Ev '^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\.swift$' \
             | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
+
+      - name: Build unsigned Universal 2 release archive
+        if: ${{ success() }}
+        run: |
+          set -euo pipefail
+
+          archive_path="$RUNNER_TEMP/Blackbox-Unsigned.xcarchive"
+          archive_zip="$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip"
+          manifest_plist="$RUNNER_TEMP/Blackbox-unsigned-universal2.manifest.plist"
+          manifest_json="$RUNNER_TEMP/Blackbox-unsigned-universal2.manifest.json"
+          metadata_plist="$GITHUB_WORKSPACE/Config/ReleaseMetadata.plist"
+          test ! -e "$archive_path"
+          test ! -e "$archive_zip"
+          plutil -lint "$metadata_plist"
+          product="$(plutil -extract ProductName raw -o - "$metadata_plist")"
+          bundle_identifier="$(plutil -extract BundleIdentifier raw -o - "$metadata_plist")"
+          version="$(plutil -extract Version raw -o - "$metadata_plist")"
+          build="$(plutil -extract Build raw -o - "$metadata_plist")"
+          minimum_system_version="$(plutil -extract MinimumSystemVersion raw -o - "$metadata_plist")"
+          test "$product" = 'Blackbox'
+          test "$bundle_identifier" = 'uk.co.blackbox.logbook'
+          test "$version" = '1.0.0'
+          test "$build" = '1'
+          test "$minimum_system_version" = '14.0'
+
+          xcodebuild archive \
+            -project Blackbox.xcodeproj \
+            -scheme Blackbox \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$archive_path" \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+          app_path="$archive_path/Products/Applications/Blackbox.app"
+          info_plist="$app_path/Contents/Info.plist"
+          executable_name="$(plutil -extract CFBundleExecutable raw -o - "$info_plist")"
+          executable_path="$app_path/Contents/MacOS/$executable_name"
+          test -x "$executable_path"
+
+          architectures="$(lipo -archs "$executable_path")"
+          architecture_count=0
+          has_arm64=0
+          has_x86_64=0
+          for architecture in $architectures; do
+            architecture_count=$((architecture_count + 1))
+            test "$architecture" != arm64 || has_arm64=1
+            test "$architecture" != x86_64 || has_x86_64=1
+          done
+          test "$architecture_count" -eq 2
+          test "$has_arm64" -eq 1
+          test "$has_x86_64" -eq 1
+
+          if codesign --display "$app_path" >/dev/null 2>&1; then
+            echo 'The CI release-input archive must remain unsigned.' >&2
+            exit 1
+          fi
+
+          /bin/bash script/verify_release_input.sh --app "$app_path"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$info_plist")" = "$bundle_identifier"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$info_plist")" = "$version"
+          test "$(plutil -extract CFBundleVersion raw -o - "$info_plist")" = "$build"
+          /bin/bash script/release_privacy_scan.sh --repository "$GITHUB_WORKSPACE" --app "$app_path"
+
+          ditto -c -k --sequesterRsrc --keepParent "$archive_path" "$archive_zip"
+          archive_sha256="$(shasum -a 256 "$archive_zip" | awk '{print $1}')"
+          archive_bytes="$(stat -f '%z' "$archive_zip")"
+
+          plutil -create xml1 "$manifest_plist"
+          plutil -insert product -string "$product" "$manifest_plist"
+          plutil -insert bundleIdentifier -string "$bundle_identifier" "$manifest_plist"
+          plutil -insert version -string "$version" "$manifest_plist"
+          plutil -insert build -string "$build" "$manifest_plist"
+          plutil -insert minimumSystemVersion -string "$minimum_system_version" "$manifest_plist"
+          plutil -insert architectures -json '["arm64","x86_64"]' "$manifest_plist"
+          plutil -insert sourceCommit -string "$GITHUB_SHA" "$manifest_plist"
+          plutil -insert xcodeVersion -string "$(xcodebuild -version | sed -n '1p')" "$manifest_plist"
+          plutil -insert xcodeBuild -string "$(xcodebuild -version | sed -n '2p' | awk '{print $3}')" "$manifest_plist"
+          plutil -insert signing -string unsigned-ci-release-input "$manifest_plist"
+          plutil -insert artifactFilename -string "$(basename "$archive_zip")" "$manifest_plist"
+          plutil -insert archiveDirectory -string "$(basename "$archive_path")" "$manifest_plist"
+          plutil -insert artifactSHA256 -string "$archive_sha256" "$manifest_plist"
+          plutil -insert artifactBytes -integer "$archive_bytes" "$manifest_plist"
+          plutil -insert workflowRunURL -string "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$manifest_plist"
+          plutil -insert swiftPMTests -string passed "$manifest_plist"
+          plutil -insert executableUnitTests -string passed "$manifest_plist"
+          plutil -insert releasePerformanceGates -string passed "$manifest_plist"
+          plutil -insert smokeTests -string passed "$manifest_plist"
+          plutil -insert snapshotMatrix -string passed-72 "$manifest_plist"
+          plutil -insert uiTests -string passed "$manifest_plist"
+          plutil -insert privacyGate -string passed "$manifest_plist"
+          plutil -insert dataPolicy -string synthetic-temporary-roots-only "$manifest_plist"
+          plutil -convert json -r -o "$manifest_json" "$manifest_plist"
+          plutil -convert xml1 -o /dev/null "$manifest_json"
+          test "$(plutil -extract artifactSHA256 raw -o - "$manifest_json")" = "$archive_sha256"
+
+      - name: Preserve unsigned release input
+        if: ${{ success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-unsigned-universal2-release-input
+          path: |
+            ${{ runner.temp }}/Blackbox-unsigned-universal2.xcarchive.zip
+            ${{ runner.temp }}/Blackbox-unsigned-universal2.manifest.plist
+            ${{ runner.temp }}/Blackbox-unsigned-universal2.manifest.json
+          if-no-files-found: error
+          retention-days: 14

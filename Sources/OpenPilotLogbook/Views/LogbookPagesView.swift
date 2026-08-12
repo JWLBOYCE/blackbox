@@ -18,7 +18,7 @@ struct LogbookPagesView: View {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Logbook Pages")
-                        .font(.system(size: 30, weight: .semibold))
+                        .pageTitleStyle()
                     Text("Sixteen sectors per page, with page and cumulative closing totals.")
                         .foregroundStyle(OpenPilotTheme.muted)
                 }
@@ -63,6 +63,7 @@ struct LogbookPagesView: View {
             }
         }
         .navigationTitle("Logbook Pages")
+        .accessibilityIdentifier("pages.screen")
         .onAppear {
             if selectedPageID == nil { selectedPageID = pages.first?.id }
         }

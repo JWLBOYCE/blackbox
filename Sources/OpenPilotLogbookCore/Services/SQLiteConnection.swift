@@ -6,10 +6,11 @@ public enum SQLiteError: Error, CustomStringConvertible {
     case prepare(String)
     case step(String)
     case bind(String)
+    case backup(String)
 
     public var description: String {
         switch self {
-        case .open(let message), .prepare(let message), .step(let message), .bind(let message):
+        case .open(let message), .prepare(let message), .step(let message), .bind(let message), .backup(let message):
             return message
         }
     }
@@ -53,11 +54,15 @@ public final class SQLiteConnection {
     public init(path: String, readOnly: Bool = false) throws {
         let flags = readOnly ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
         if sqlite3_open_v2(path, &db, flags, nil) != SQLITE_OK {
-            throw SQLiteError.open(SQLiteConnection.lastMessage(db))
+            throw SQLiteError.open("\(SQLiteConnection.lastMessage(db)) [\(path)]")
         }
         if !readOnly {
-            try execute("PRAGMA foreign_keys = ON")
-            try execute("PRAGMA journal_mode = WAL")
+            do {
+                try execute("PRAGMA foreign_keys = ON")
+                try execute("PRAGMA journal_mode = WAL")
+            } catch {
+                throw SQLiteError.open("Could not configure SQLite database [\(path)]: \(error)")
+            }
         }
     }
 
@@ -114,6 +119,17 @@ public final class SQLiteConnection {
         sqlite3_last_insert_rowid(db)
     }
 
+    public var changes: Int {
+        Int(sqlite3_changes(db))
+    }
+
+    public func checkpointWAL() throws {
+        let result = try rows("PRAGMA wal_checkpoint(TRUNCATE)").first ?? [:]
+        guard (result["busy"]?.int ?? 0) == 0 else {
+            throw SQLiteError.step("SQLite WAL checkpoint could not acquire the database lock")
+        }
+    }
+
     public func transaction(_ work: () throws -> Void) throws {
         try execute("BEGIN IMMEDIATE")
         do {
@@ -123,6 +139,33 @@ public final class SQLiteConnection {
             try? execute("ROLLBACK")
             throw error
         }
+    }
+
+    public func backup(to destinationPath: String) throws {
+        var destination: OpaquePointer?
+        guard sqlite3_open_v2(destinationPath, &destination, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK else {
+            defer { sqlite3_close(destination) }
+            throw SQLiteError.backup("\(Self.lastMessage(destination)) [\(destinationPath)]")
+        }
+        defer { sqlite3_close(destination) }
+        guard let backup = sqlite3_backup_init(destination, "main", db, "main") else {
+            throw SQLiteError.backup("\(Self.lastMessage(destination)) while initialising backup [\(destinationPath)]")
+        }
+        let result = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        guard result == SQLITE_DONE, finishResult == SQLITE_OK else {
+            throw SQLiteError.backup("\(Self.lastMessage(destination)) while copying backup [\(destinationPath)]")
+        }
+        // A copied database must be self-contained. Leaving the destination in
+        // WAL mode can make a read-only verification depend on sidecar files
+        // that were never part of the backup operation.
+        guard sqlite3_exec(destination, "PRAGMA journal_mode=DELETE", nil, nil, nil) == SQLITE_OK else {
+            throw SQLiteError.backup("\(Self.lastMessage(destination)) while finalising backup [\(destinationPath)]")
+        }
+    }
+
+    public func integrityCheck() throws -> String {
+        try rows("PRAGMA integrity_check").first?.values.first?.string ?? "No integrity result"
     }
 
     private func bind(_ values: [SQLiteValue], to statement: OpaquePointer?) throws {

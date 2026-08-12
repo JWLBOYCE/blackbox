@@ -7,18 +7,18 @@ struct ComplianceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("CAA Check")
-                    .font(.system(size: 34, weight: .semibold))
-                Text("FCL.050 readiness for your electronic and printable logbook.")
+                Text("Logbook Checks")
+                    .pageTitleStyle()
+                Text("Internal completeness and consistency checks for finalised entries. These checks are not regulatory certification.")
                     .foregroundStyle(OpenPilotTheme.muted)
             }
             HStack(spacing: 10) {
                 MetricTile(title: "Checked", value: "\(store.compliance.checkedFlights)", systemImage: "checklist", tint: OpenPilotTheme.cyan)
                 MetricTile(title: "Issues", value: "\(store.compliance.issues.count)", systemImage: store.compliance.issues.isEmpty ? "checkmark.seal" : "exclamationmark.triangle", tint: store.compliance.issues.isEmpty ? OpenPilotTheme.green : OpenPilotTheme.amber)
-                MetricTile(title: "CAA Export", value: store.compliance.caaExportReady ? "Ready" : "Review", systemImage: "doc.badge.gearshape", tint: store.compliance.caaExportReady ? OpenPilotTheme.green : OpenPilotTheme.amber)
+                MetricTile(title: "Export Check", value: store.compliance.caaExportReady ? "Passed" : "Review", systemImage: "doc.badge.gearshape", tint: store.compliance.caaExportReady ? OpenPilotTheme.green : OpenPilotTheme.amber)
             }
-            ReadinessStrip(isReady: store.compliance.caaExportReady, issueCount: store.compliance.issues.count) {
-                store.exportReports()
+            ReadinessStrip(isReady: store.compliance.caaExportReady, issueCount: store.compliance.issues.count, checkedCount: store.compliance.checkedFlights) {
+                store.chooseAndExportReports()
             }
             Panel("Validation Issues", systemImage: "checkmark.shield") {
                 Table(store.compliance.issues) {
@@ -28,16 +28,21 @@ struct ComplianceView: View {
                     TableColumn("Field", value: \.field)
                     TableColumn("Issue", value: \.message)
                     TableColumn("Fix") { issue in
-                        Text(issue.guidance.isEmpty ? "Review this entry and complete the missing CAA field." : issue.guidance)
+                        Text(issue.guidance.isEmpty ? "Review this entry and complete the missing field." : issue.guidance)
                     }
                     TableColumn("Flight ID") { issue in
-                        Text("\(issue.flightID)").monospacedDigit()
+                        Button("\(issue.flightID)") {
+                            store.showFlight(id: issue.flightID)
+                        }
+                        .buttonStyle(.link)
+                        .monospacedDigit()
                     }
                 }
                 .scrollContentBackground(.hidden)
             }
         }
         .padding(24)
-        .navigationTitle("CAA Check")
+        .navigationTitle("Logbook Checks")
+        .accessibilityIdentifier("checks.screen")
     }
 }

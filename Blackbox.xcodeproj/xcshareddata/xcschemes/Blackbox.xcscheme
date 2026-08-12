@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="2600" version="1.7">
+  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+    <BuildActionEntries>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000010" BuildableName="Blackbox.app" BlueprintName="Blackbox" ReferencedContainer="container:Blackbox.xcodeproj"/>
+      </BuildActionEntry>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000012" BuildableName="BlackboxUITests.xctest" BlueprintName="BlackboxUITests" ReferencedContainer="container:Blackbox.xcodeproj"/>
+      </BuildActionEntry>
+    </BuildActionEntries>
+  </BuildAction>
+  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
+    <TestPlans><TestPlanReference reference="container:Blackbox.xctestplan" default="YES"/></TestPlans>
+  </TestAction>
+  <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="YES" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
+    <CommandLineArguments>
+      <CommandLineArgument argument="--ui-testing" isEnabled="YES"/>
+    </CommandLineArguments>
+    <EnvironmentVariables>
+      <EnvironmentVariable key="BLACKBOX_DATA_ROOT" value="$(TEMP_DIR)/Blackbox-Xcode-Debug" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_SYNTHETIC_FIXTURE" value="deterministic" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_UI_TEST_APPEARANCE" value="light" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_UI_TEST_WIDTH" value="1440" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_UI_TEST_HEIGHT" value="980" isEnabled="YES"/>
+    </EnvironmentVariables>
+    <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000010" BuildableName="Blackbox.app" BlueprintName="Blackbox" ReferencedContainer="container:Blackbox.xcodeproj"/></BuildableProductRunnable>
+  </LaunchAction>
+  <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="NO" savedToolIdentifier="" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES">
+    <CommandLineArguments>
+      <CommandLineArgument argument="--ui-testing" isEnabled="YES"/>
+    </CommandLineArguments>
+    <EnvironmentVariables>
+      <EnvironmentVariable key="BLACKBOX_DATA_ROOT" value="$(TEMP_DIR)/Blackbox-Xcode-Debug-Profile" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_SYNTHETIC_FIXTURE" value="deterministic" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_UI_TEST_APPEARANCE" value="light" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_UI_TEST_WIDTH" value="1440" isEnabled="YES"/>
+      <EnvironmentVariable key="BLACKBOX_UI_TEST_HEIGHT" value="980" isEnabled="YES"/>
+    </EnvironmentVariables>
+    <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000010" BuildableName="Blackbox.app" BlueprintName="Blackbox" ReferencedContainer="container:Blackbox.xcodeproj"/></BuildableProductRunnable>
+  </ProfileAction>
+  <AnalyzeAction buildConfiguration="Debug"/>
+  <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
+</Scheme>
