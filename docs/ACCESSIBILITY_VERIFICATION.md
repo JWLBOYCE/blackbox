@@ -8,13 +8,13 @@ The committed XCUITest suite and snapshot runner provide automated regression ev
 
 | Evidence | What it covers | What it does not prove |
 | --- | --- | --- |
-| `Blackbox.xctestplan` | All thirteen scripted workflows in Light/Dark at regular/compact widths (52 workflow executions) | Real VoiceOver speech, rotor order, Full Keyboard Access, or human usability |
-| `BlackboxAccessibility.xctestplan` | A focused keyboard, window-size, and configured-surface workflow in Increase Contrast at both widths and in large-text/reduced-motion (3 executions) | Complete workflow coverage in those extra configurations or human accessibility usability |
+| `Blackbox.xctestplan` | All thirteen scripted workflows in Light/Dark at regular/compact widths (52 workflow executions), run by CI as four independent configuration shards | Real VoiceOver speech, rotor order, Full Keyboard Access, or human usability |
+| `BlackboxAccessibility.xctestplan` | A focused keyboard, window-size, and configured-surface workflow in Increase Contrast at both widths and in large-text/reduced-motion (3 executions), run as three independent shards | Complete workflow coverage in those extra configurations or human accessibility usability |
 | `UITests/BlackboxUITests.swift` | Stable identifiers, expected controls and statuses, shortcuts, dialogs, file panels, restoration, rollback, and deterministic synthetic fixtures | That every control has the best spoken description or that focus order is logical |
 | `script/build_and_run.sh --check` | Seventy-two synthetic principal-screen images: 12 destinations x Light/Dark/Increase Contrast x regular/compact | Keyboard reachability, spoken output, or interaction quality |
 | This walkthrough | Human verification of the behaviours automation cannot establish | Nothing until a tester records and signs the results |
 
-An automated CI pass does not mark any unchecked manual item below as passed. A manual pass does not replace the automated test, snapshot, privacy, database-integrity, signing, or notarization gates.
+Each of the seven CI shards retains a separate `.xcresult`, console log, and hash manifest under an immutable artifact name. The release aggregator rejects a missing, duplicated, failed, wrong-configuration, wrong-commit, wrong-Xcode, or hash-mismatched shard before producing an unsigned archive. An automated CI pass still does not mark any unchecked manual item below as passed. A manual pass does not replace the automated test, snapshot, privacy, database-integrity, signing, or notarization gates.
 
 ## Safe manual test setup
 

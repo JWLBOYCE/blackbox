@@ -16,7 +16,8 @@ Usage: $PROGRAM_NAME
 Required environment:
   BLACKBOX_CI_ARCHIVE_PATH            Downloaded CI .xcarchive.zip
   BLACKBOX_CI_MANIFEST_PATH           Downloaded CI XML manifest plist
-  BLACKBOX_DEVELOPER_ID_APPLICATION  Developer ID Application name or SHA-1 identity
+  BLACKBOX_CI_EVIDENCE_INDEX_PATH     Downloaded CI shard-evidence index plist
+  BLACKBOX_DEVELOPER_ID_APPLICATION   Developer ID Application name or SHA-1 identity
   BLACKBOX_NOTARY_PROFILE            notarytool profile stored in the login Keychain
   BLACKBOX_LIVE_DATA_ROOT            Existing live Application Support/Blackbox root
   BLACKBOX_LIVE_HASH_MANIFEST        Baseline from release_live_hashes.sh capture
@@ -64,11 +65,15 @@ verify_ci_manifest() {
     local manifest="$CI_MANIFEST"
     local archive_sha256
     local archive_bytes
+    local evidence_index_sha256
+    local evidence_index_bytes
+    local digest_key
+    local indexed_digest
     local event_name
     local pull_request_number
     local workflow_ref
 
-    /usr/bin/plutil -lint "$manifest" >/dev/null
+    /usr/bin/plutil -lint "$manifest" "$CI_EVIDENCE_INDEX" >/dev/null
     [[ "$(plist_value product "$manifest")" == "$PRODUCT" ]] || fail "CI manifest product does not match release metadata."
     [[ "$(plist_value bundleIdentifier "$manifest")" == "$BUNDLE_ID" ]] || fail "CI manifest bundle identifier does not match release metadata."
     [[ "$(plist_value version "$manifest")" == "$VERSION" ]] || fail "CI manifest version does not match release metadata."
@@ -122,6 +127,18 @@ verify_ci_manifest() {
         || fail "CI did not pass all 13 workflows in Light/Dark at regular/compact widths."
     [[ "$(plist_value accessibilityUITests "$manifest")" == "passed-focused-workflow-x-3-configurations" ]] \
         || fail "CI did not pass the focused Increase Contrast, large-text, and Reduce Motion checks."
+    [[ "$(plist_value evidenceArchitecture "$manifest")" == "seven-independent-xcuitest-shards" ]] \
+        || fail "CI manifest does not use the required seven-shard UI evidence architecture."
+    [[ "$(plist_value uiShardCount "$manifest")" == "4" ]] \
+        || fail "CI manifest does not contain all four full-workflow UI shards."
+    [[ "$(plist_value uiWorkflowExecutionCount "$manifest")" == "52" ]] \
+        || fail "CI manifest does not cover all 52 full-workflow UI executions."
+    [[ "$(plist_value accessibilityUIShardCount "$manifest")" == "3" ]] \
+        || fail "CI manifest does not contain all three focused-accessibility shards."
+    [[ "$(plist_value accessibilityUIExecutionCount "$manifest")" == "3" ]] \
+        || fail "CI manifest does not cover all three focused-accessibility executions."
+    [[ "$(plist_value evidenceIndexFilename "$manifest")" == "$(basename "$CI_EVIDENCE_INDEX")" ]] \
+        || fail "CI evidence-index filename does not match its manifest."
     [[ "$(plist_value privacyGate "$manifest")" == "passed" ]] || fail "CI privacy gate did not pass."
     [[ "$(plist_value dataPolicy "$manifest")" == "synthetic-temporary-roots-only" ]] || fail "CI manifest has an unexpected data policy."
 
@@ -129,6 +146,34 @@ verify_ci_manifest() {
     archive_bytes="$(/usr/bin/stat -f '%z' "$CI_ARCHIVE")"
     [[ "$archive_sha256" == "$(plist_value artifactSHA256 "$manifest")" ]] || fail "CI archive SHA-256 does not match its manifest."
     [[ "$archive_bytes" == "$(plist_value artifactBytes "$manifest")" ]] || fail "CI archive size does not match its manifest."
+
+    evidence_index_sha256="$(/usr/bin/shasum -a 256 "$CI_EVIDENCE_INDEX" | /usr/bin/awk '{print $1}')"
+    evidence_index_bytes="$(/usr/bin/stat -f '%z' "$CI_EVIDENCE_INDEX")"
+    [[ "$evidence_index_sha256" == "$(plist_value evidenceIndexSHA256 "$manifest")" ]] \
+        || fail "CI shard-evidence index SHA-256 does not match its manifest."
+    [[ "$evidence_index_bytes" == "$(plist_value evidenceIndexBytes "$manifest")" ]] \
+        || fail "CI shard-evidence index size does not match its manifest."
+    [[ "$(plist_value evidenceSchema "$CI_EVIDENCE_INDEX")" == "1" ]] \
+        || fail "CI shard-evidence index schema is unsupported."
+    [[ "$(plist_value sourceCommit "$CI_EVIDENCE_INDEX")" == "$SOURCE_COMMIT" ]] \
+        || fail "CI shard-evidence index commit does not match the checked-out source."
+    [[ "$(plist_value runID "$CI_EVIDENCE_INDEX")" == "$(plist_value runID "$manifest")" ]] \
+        || fail "CI shard-evidence index run does not match the archive manifest."
+    [[ "$(/usr/bin/plutil -extract artifactDigests json -o - "$CI_EVIDENCE_INDEX" | /usr/bin/python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')" == "8" ]] \
+        || fail "CI shard-evidence index must contain exactly eight evidence-artifact digests."
+    for digest_key in \
+        principal_screen_snapshots \
+        XCUITest_Light_Regular XCUITest_Light_Compact \
+        XCUITest_Dark_Regular XCUITest_Dark_Compact \
+        Accessibility_XCUITest_Increase_Contrast_Regular \
+        Accessibility_XCUITest_Increase_Contrast_Compact \
+        Accessibility_XCUITest_Large_Text_Reduced_Motion; do
+        indexed_digest="$(plist_value "artifactDigests.$digest_key" "$CI_EVIDENCE_INDEX")"
+        [[ "$indexed_digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || fail "CI shard-evidence index contains an invalid artifact digest for $digest_key."
+        [[ "$indexed_digest" == "$(plist_value "evidenceArtifactDigests.$digest_key" "$manifest")" ]] \
+            || fail "CI shard-evidence digest for $digest_key is not bound into the archive manifest."
+    done
 }
 
 sign_code() {
@@ -283,6 +328,7 @@ run_quarantined_synthetic_smoke() {
 
 CI_ARCHIVE="${BLACKBOX_CI_ARCHIVE_PATH:-}"
 CI_MANIFEST="${BLACKBOX_CI_MANIFEST_PATH:-}"
+CI_EVIDENCE_INDEX="${BLACKBOX_CI_EVIDENCE_INDEX_PATH:-}"
 IDENTITY="${BLACKBOX_DEVELOPER_ID_APPLICATION:-}"
 NOTARY_PROFILE="${BLACKBOX_NOTARY_PROFILE:-}"
 LIVE_DATA_ROOT="${BLACKBOX_LIVE_DATA_ROOT:-}"
@@ -290,6 +336,7 @@ LIVE_HASH_MANIFEST="${BLACKBOX_LIVE_HASH_MANIFEST:-}"
 
 [[ -n "$CI_ARCHIVE" ]] || fail "Set BLACKBOX_CI_ARCHIVE_PATH to the downloaded CI .xcarchive.zip."
 [[ -n "$CI_MANIFEST" ]] || fail "Set BLACKBOX_CI_MANIFEST_PATH to the downloaded CI XML manifest plist."
+[[ -n "$CI_EVIDENCE_INDEX" ]] || fail "Set BLACKBOX_CI_EVIDENCE_INDEX_PATH to the downloaded CI shard-evidence index plist."
 [[ -n "$IDENTITY" ]] || fail "Set BLACKBOX_DEVELOPER_ID_APPLICATION to a Developer ID Application identity."
 [[ -n "$NOTARY_PROFILE" ]] || fail "Set BLACKBOX_NOTARY_PROFILE to a notarytool Keychain profile name."
 [[ -n "$LIVE_DATA_ROOT" ]] || fail "Set BLACKBOX_LIVE_DATA_ROOT explicitly."
@@ -310,15 +357,17 @@ FINAL_BASENAME="$PRODUCT-$VERSION-macOS-universal"
 
 CI_ARCHIVE="$(absolute_existing_path "$CI_ARCHIVE")"
 CI_MANIFEST="$(absolute_existing_path "$CI_MANIFEST")"
+CI_EVIDENCE_INDEX="$(absolute_existing_path "$CI_EVIDENCE_INDEX")"
 LIVE_HASH_MANIFEST="$(absolute_existing_path "$LIVE_HASH_MANIFEST")"
 LIVE_DATA_ROOT="$(absolute_existing_directory "$LIVE_DATA_ROOT")"
 [[ -f "$CI_ARCHIVE" && ! -L "$CI_ARCHIVE" ]] || fail "CI archive is missing, not regular, or a symbolic link."
 [[ -f "$CI_MANIFEST" && ! -L "$CI_MANIFEST" ]] || fail "CI manifest is missing, not regular, or a symbolic link."
+[[ -f "$CI_EVIDENCE_INDEX" && ! -L "$CI_EVIDENCE_INDEX" ]] || fail "CI shard-evidence index is missing, not regular, or a symbolic link."
 [[ -f "$LIVE_HASH_MANIFEST" && ! -L "$LIVE_HASH_MANIFEST" ]] || fail "Live hash manifest is missing, not regular, or a symbolic link."
 case "$LIVE_HASH_MANIFEST" in
     "$ROOT_DIR"/*) fail "Keep the live hash manifest outside the repository." ;;
 esac
-for release_input in "$CI_ARCHIVE" "$CI_MANIFEST"; do
+for release_input in "$CI_ARCHIVE" "$CI_MANIFEST" "$CI_EVIDENCE_INDEX"; do
     case "$release_input" in
         "$LIVE_DATA_ROOT"|"$LIVE_DATA_ROOT"/*) fail "A release input cannot be inside the live data root." ;;
     esac
@@ -489,6 +538,9 @@ MANIFEST_PLIST="$WORK_DIR/release-manifest.plist"
 /usr/bin/plutil -insert ciSnapshotMatrix -string "$(plist_value snapshotMatrix "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciUITests -string "$(plist_value uiTests "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciAccessibilityUITests -string "$(plist_value accessibilityUITests "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciEvidenceArchitecture -string "$(plist_value evidenceArchitecture "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciEvidenceIndexFilename -string "$(basename "$CI_EVIDENCE_INDEX")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciEvidenceIndexSHA256 -string "$(plist_value evidenceIndexSHA256 "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciPrivacyGate -string "$(plist_value privacyGate "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciDataPolicy -string "$(plist_value dataPolicy "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert createdAt -string "$created_at" "$MANIFEST_PLIST"

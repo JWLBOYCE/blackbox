@@ -122,11 +122,14 @@
     }
   ],
   "defaultOptions" : {
+    "defaultTestExecutionTimeAllowance" : 180,
+    "maximumTestExecutionTimeAllowance" : 300,
     "targetForVariableExpansion" : {
       "containerPath" : "container:Blackbox.xcodeproj",
       "identifier" : "A00000000000000000000010",
       "name" : "Blackbox"
-    }
+    },
+    "testTimeoutsEnabled" : true
   },
   "testTargets" : [
     {

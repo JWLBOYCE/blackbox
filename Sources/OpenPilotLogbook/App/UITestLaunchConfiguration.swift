@@ -17,6 +17,7 @@ enum UITestLaunchConfiguration {
     private static let snapshotKey = "OPENPILOT_SNAPSHOT_PATH"
     private static let markerName = ".blackbox-synthetic-ui-test-root"
     private static let allowedRootPrefixes = ["Blackbox-XCUITest-", "Blackbox-Xcode-Debug"]
+    private static let uiTestRunnerBundleIdentifier = "uk.co.blackbox.logbook.UITests.xctrunner"
     private static let ephemeralLaunchPaths: LogbookPaths = makeEphemeralLaunchPaths()
 
     static func pathsForCurrentLaunch(
@@ -147,23 +148,47 @@ enum UITestLaunchConfiguration {
         return true
     }
 
-    private static func validatedRoot(_ rawRoot: String, fileManager: FileManager) throws -> URL {
+    static func validatedRoot(_ rawRoot: String, fileManager: FileManager) throws -> URL {
+        try validatedRoot(
+            rawRoot,
+            temporaryDirectory: fileManager.temporaryDirectory,
+            homeDirectory: fileManager.homeDirectoryForCurrentUser
+        )
+    }
+
+    static func validatedRoot(
+        _ rawRoot: String,
+        temporaryDirectory: URL,
+        homeDirectory: URL
+    ) throws -> URL {
         let root = URL(fileURLWithPath: rawRoot, isDirectory: true)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        let temporaryRoot = fileManager.temporaryDirectory
+        let temporaryRoot = temporaryDirectory
             .standardizedFileURL
             .resolvingSymlinksInPath()
         let temporaryPrefix = temporaryRoot.path.hasSuffix("/") ? temporaryRoot.path : temporaryRoot.path + "/"
+        let uiTestRunnerTemporaryRoot = homeDirectory
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Containers", isDirectory: true)
+            .appendingPathComponent(uiTestRunnerBundleIdentifier, isDirectory: true)
+            .appendingPathComponent("Data", isDirectory: true)
+            .appendingPathComponent("tmp", isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let isDirectUITestRunnerTemporaryChild = root.deletingLastPathComponent() == uiTestRunnerTemporaryRoot
 
-        guard root.path.hasPrefix(temporaryPrefix), root.path != temporaryRoot.path else {
+        guard
+            (root.path.hasPrefix(temporaryPrefix) && root.path != temporaryRoot.path)
+                || isDirectUITestRunnerTemporaryChild
+        else {
             throw FixtureError.rootOutsideTemporaryDirectory(root.path)
         }
         guard allowedRootPrefixes.contains(where: root.lastPathComponent.hasPrefix) else {
             throw FixtureError.invalidRootName(root.lastPathComponent)
         }
 
-        let liveRoot = fileManager.homeDirectoryForCurrentUser
+        let liveRoot = homeDirectory
             .appendingPathComponent("Library/Application Support/Blackbox", isDirectory: true)
             .standardizedFileURL
             .resolvingSymlinksInPath()
@@ -204,7 +229,7 @@ enum UITestLaunchConfiguration {
         )
     }
 
-    private static func resetMarkedRoot(_ root: URL, fileManager: FileManager) throws {
+    static func resetMarkedRoot(_ root: URL, fileManager: FileManager) throws {
         let marker = root.appendingPathComponent(markerName)
         var isDirectory: ObjCBool = false
         if fileManager.fileExists(atPath: root.path, isDirectory: &isDirectory) {

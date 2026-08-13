@@ -41,6 +41,10 @@ let package = Package(
         .testTarget(
             name: "OpenPilotLogbookCoreTests",
             dependencies: ["OpenPilotLogbookCore"]
+        ),
+        .testTarget(
+            name: "OpenPilotLogbookAppTests",
+            dependencies: ["OpenPilotLogbook"]
         )
     ]
 )
