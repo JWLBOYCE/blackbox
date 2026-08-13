@@ -825,14 +825,34 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(locationField.waitForExistence(timeout: 3), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
         locationField.typeKey(.return, modifierFlags: [])
-        XCTAssertTrue(waitForNonexistence(locationField, timeout: 5), "Go to Folder did not resolve the selected path")
 
-        let action = panel.buttons.matching(
-            NSPredicate(format: "isEnabled == YES AND (label == 'Open' OR label == 'Choose' OR label == 'Export Here')")
-        ).firstMatch
-        XCTAssertTrue(action.waitForExistence(timeout: 3), "The file panel did not enable its selection action")
+        // Native open/save panels expose the primary action through the stable
+        // AppKit accessibility identifier. Its visible title (Open, Choose, or
+        // Export Here) is not necessarily exposed as XCUIElement.label. Query
+        // from the app because Go to Folder can rebuild the panel hierarchy;
+        // PathTextField may remain as a stale accessibility proxy afterwards.
+        let action = app.buttons.matching(identifier: "OKButton").firstMatch
+        guard action.waitForExistence(timeout: 8) else {
+            XCTFail("The file panel did not expose its selection action")
+            return
+        }
+        guard waitForActionable(action, timeout: 8) else {
+            XCTFail("The file panel did not enable its selection action")
+            return
+        }
         action.click()
-        XCTAssertTrue(waitForNonexistence(action, timeout: 8), "The file panel did not accept the selected path")
+        // Each caller asserts the resulting import, restore preview, or export
+        // confirmation. Do not wait on the generic first sheet here: a
+        // successful selection can immediately replace it with that next sheet.
+    }
+
+    private func waitForActionable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate { object, _ in
+            guard let element = object as? XCUIElement else { return false }
+            return element.exists && element.isEnabled && element.isHittable
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
     private func waitForNonexistence(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
