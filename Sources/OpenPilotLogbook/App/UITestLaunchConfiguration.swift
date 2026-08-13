@@ -8,6 +8,18 @@ import SwiftUI
 /// The application entry point must construct its store with
 /// `LogbookStore(paths: UITestLaunchConfiguration.pathsForCurrentLaunch())`.
 enum UITestLaunchConfiguration {
+    static func allowsLiveLogTenDiscoveryForCurrentLaunch(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+#if DEBUG
+        return false
+#else
+        return !arguments.contains("--ui-testing") &&
+            environment["BLACKBOX_DATA_ROOT"] == nil &&
+            environment["OPENPILOT_SNAPSHOT_PATH"] == nil
+#endif
+    }
     private static let argument = "--ui-testing"
     private static let fixtureKey = "BLACKBOX_SYNTHETIC_FIXTURE"
     private static let scenarioKey = "BLACKBOX_UI_TEST_SCENARIO"
@@ -387,7 +399,9 @@ enum UITestLaunchConfiguration {
         try createLogTenFixture(at: differentSource, matching: changedImport)
         let emptySource = paths.sourceLogTenDatabase.deletingLastPathComponent().appendingPathComponent("LogTenEmpty.sql")
         try createLogTenFixture(at: emptySource, matching: imported)
-        try SQLiteConnection(path: emptySource.path).execute("DELETE FROM ZFLIGHT")
+        let emptyDatabase = try SQLiteConnection(path: emptySource.path)
+        try emptyDatabase.execute("DELETE FROM ZFLIGHT")
+        try emptyDatabase.finalizeAsSelfContainedDatabase()
         let unreadableSource = paths.sourceLogTenDatabase.deletingLastPathComponent().appendingPathComponent("LogTenUnreadable.sql")
         try Data("This is an intentionally unreadable synthetic comparison fixture.\n".utf8).write(
             to: unreadableSource,
@@ -428,8 +442,27 @@ enum UITestLaunchConfiguration {
         default: throw FixtureError.invalidScenario(scenario)
         }
         guard let replacement else { return }
-        try FileManager.default.removeItem(at: configuredSource)
-        try FileManager.default.copyItem(at: replacement, to: configuredSource)
+        try replaceSyntheticDatabase(at: configuredSource, with: replacement)
+    }
+
+    private static func replaceSyntheticDatabase(at destination: URL, with source: URL) throws {
+        let fileManager = FileManager.default
+        let staged = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).replacement")
+        defer { try? fileManager.removeItem(at: staged) }
+
+        try fileManager.copyItem(at: source, to: staged)
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: destination.path + suffix)
+            if fileManager.fileExists(atPath: sidecar.path) {
+                try fileManager.removeItem(at: sidecar)
+            }
+        }
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(destination, withItemAt: staged)
+        } else {
+            try fileManager.moveItem(at: staged, to: destination)
+        }
     }
 
     private static func fixedDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
@@ -575,6 +608,7 @@ enum UITestLaunchConfiguration {
                 .real(flight.distanceNM),
                 .text(flight.remarks)
             ])
+        try database.finalizeAsSelfContainedDatabase()
     }
 
     private enum FixtureError: LocalizedError {

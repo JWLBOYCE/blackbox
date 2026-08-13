@@ -4,6 +4,31 @@ import Testing
 
 @Suite("Blackbox reliability")
 struct ReliabilityTests {
+    @Test("A finalised WAL database is a self-contained single-file fixture")
+    func finalisedWALDatabaseIsSelfContained() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("Source.sqlite")
+        let copiedURL = root.appendingPathComponent("Copied.sqlite")
+
+        do {
+            let source = try SQLiteConnection(path: sourceURL.path)
+            try source.execute("CREATE TABLE synthetic_flights(id INTEGER PRIMARY KEY, flight_number TEXT NOT NULL)")
+            try source.execute("INSERT INTO synthetic_flights VALUES(1, 'SYN-WAL-1')")
+            try source.finalizeAsSelfContainedDatabase()
+        }
+
+        let fileManager = FileManager.default
+        #expect(!fileManager.fileExists(atPath: sourceURL.path + "-wal"))
+        try fileManager.copyItem(at: sourceURL, to: copiedURL)
+
+        let copied = try SQLiteConnection(path: copiedURL.path, readOnly: true)
+        let row = try #require(try copied.rows("SELECT id, flight_number FROM synthetic_flights").first)
+        #expect(row["id"]?.int == 1)
+        #expect(row["flight_number"]?.string == "SYN-WAL-1")
+        #expect(try copied.integrityCheck().lowercased() == "ok")
+    }
+
     @Test("Draft round trip preserves every pilot-entered field")
     func draftRoundTripPreservesEveryPilotEnteredField() throws {
         let (repository, root) = try makeRepository()
@@ -969,6 +994,27 @@ struct ReliabilityTests {
         #expect(!snapshot.importedRowsMatch)
         let state = LogTenComparisonState.empty("No source flights")
         if case .loaded = state { Issue.record("An empty source cannot be loaded as a match") }
+    }
+
+    @Test("Synthetic repositories never fall back to the live LogTen database")
+    func syntheticRepositoryNeverFallsBackToLiveLogTen() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuredSource = root.appendingPathComponent("Synthetic-Missing-LogTen.sqlite")
+        let paths = LogbookPaths(
+            backupFolder: root.appendingPathComponent("Backups", isDirectory: true),
+            sourceLogTenDatabase: configuredSource,
+            workingDatabase: root.appendingPathComponent("Blackbox.sqlite")
+        )
+        let repository = LogbookRepository(paths: paths)
+        try repository.bootstrapIfNeeded()
+
+        guard case .unavailable(let message) = repository.logTenComparisonState() else {
+            Issue.record("A missing synthetic comparison source must remain unavailable")
+            return
+        }
+        #expect(message.contains(configuredSource.path))
+        #expect(!message.contains("com.coradine.LogTenPro6"))
     }
 
     private func makeRepository() throws -> (LogbookRepository, URL) {

@@ -102,13 +102,14 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(importedFlight.waitForExistence(timeout: 5))
         importedFlight.click()
 
-        let advancedSection = app.disclosureTriangles["Notes & Advanced"]
+        let advancedSection = app.buttons["flight.section.advanced.toggle"]
         XCTAssertTrue(advancedSection.waitForExistence(timeout: 5))
         scrollEditor(untilHittable: advancedSection)
         advancedSection.click()
-        let signatureName = app.textFields["flight.signature.name"]
+        let signatureName = app.descendants(matching: .any)["flight.signature.name"]
         XCTAssertTrue(signatureName.waitForExistence(timeout: 5), "A finalised entry's advanced section must remain inspectable")
-        XCTAssertFalse(signatureName.isEnabled, "Finalised signature facts must remain immutable")
+        XCTAssertEqual(signatureName.value as? String, "Not entered")
+        XCTAssertFalse(app.textFields["flight.signature.name"].exists, "Finalised signature facts must not remain editable")
         let totalTime = app.descendants(matching: .any)["flight.time.total"]
         XCTAssertTrue(totalTime.exists)
         XCTAssertFalse(totalTime.isEnabled, "Finalised entered times must remain immutable")
@@ -132,7 +133,7 @@ final class BlackboxUITests: XCTestCase {
         let relatedFlight = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "history.revision.flight.")).firstMatch
         XCTAssertTrue(relatedFlight.waitForExistence(timeout: 5))
         relatedFlight.click()
-        XCTAssertTrue(app.tables["flights.table"].waitForExistence(timeout: 6), "A history relationship must navigate to its preserved flight")
+        XCTAssertTrue(flightsTable().waitForExistence(timeout: 6), "A history relationship must navigate to its preserved flight")
     }
 
     func testTrashUndoAndExplicitRestore() {
@@ -229,16 +230,12 @@ final class BlackboxUITests: XCTestCase {
         chooseInOpenPanel(dataRoot.appendingPathComponent("Import Sources/LogTenImportChanges.sql"))
 
         XCTAssertTrue(app.staticTexts["LogTen Import Preview"].waitForExistence(timeout: 8))
-        let matchedChanges = app.disclosureTriangles.matching(
-            NSPredicate(format: "label BEGINSWITH %@", "Matched changes")
-        ).firstMatch
+        let matchedChanges = app.buttons["import.changes.toggle"]
         XCTAssertTrue(matchedChanges.waitForExistence(timeout: 3))
         scrollUntilHittable(matchedChanges, in: "import.screen")
         matchedChanges.click()
-        let change = element(containing: "Source 1001", type: .staticText)
+        let change = app.descendants(matching: .any)["import.change.1001"]
         XCTAssertTrue(change.waitForExistence(timeout: 3))
-        change.click()
-        XCTAssertTrue(app.staticTexts["Flight number"].waitForExistence(timeout: 3))
         let totalField = app.checkBoxes["import.field.1001.total"]
         XCTAssertTrue(totalField.waitForExistence(timeout: 3))
         scrollUntilHittable(totalField, in: "import.screen")
@@ -403,10 +400,10 @@ final class BlackboxUITests: XCTestCase {
         openSection("Analysis", subtitle: "Types and places")
         XCTAssertTrue(app.descendants(matching: .any)["analysis.recordStates"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["analysis.savedGroups"].exists)
-        let a320 = element(containing: "A320", type: .button)
+        let a320 = app.descendants(matching: .any)["analysis.type.a320"]
         XCTAssertTrue(a320.waitForExistence(timeout: 5))
         a320.click()
-        XCTAssertTrue(app.tables["flights.table"].waitForExistence(timeout: 6))
+        XCTAssertTrue(flightsTable().waitForExistence(timeout: 6))
         XCTAssertTrue(element(containing: "Type: A320", type: .staticText).waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["filters.reset"].waitForExistence(timeout: 3))
         app.buttons["filters.reset"].click()
@@ -441,7 +438,7 @@ final class BlackboxUITests: XCTestCase {
         let editableRoute = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", "EHAM → EDDF")).firstMatch
         XCTAssertTrue(editableRoute.waitForExistence(timeout: 5))
         editableRoute.click()
-        XCTAssertTrue(app.tables["flights.table"].waitForExistence(timeout: 6))
+        XCTAssertTrue(flightsTable().waitForExistence(timeout: 6))
 
         replaceText(in: textField("Route"), with: "DCT-SAVE")
         openSection("3D Map", subtitle: "Route globe")
@@ -503,6 +500,13 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
         XCTAssertEqual(app.windows.count, initialWindowCount, "Command-N must create a flight in the current window, not open another window")
         replaceText(in: textField("Departure"), with: "EGLL")
+        replaceText(in: textField("Route"), with: "DCT-NATIVE-UNDO")
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertNotEqual(
+            textField("Route").value as? String,
+            "DCT-NATIVE-UNDO",
+            "Command-Z must retain native text-field Undo before any Blackbox operation Undo"
+        )
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Draft saved"].waitForExistence(timeout: 5))
         app.typeKey("d", modifierFlags: .command)
@@ -610,7 +614,7 @@ final class BlackboxUITests: XCTestCase {
         let routeItem = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", route)).firstMatch
         XCTAssertTrue(routeItem.waitForExistence(timeout: 5), "Missing mapped route \(route)")
         routeItem.click()
-        XCTAssertTrue(app.tables["flights.table"].waitForExistence(timeout: 6))
+        XCTAssertTrue(flightsTable().waitForExistence(timeout: 6))
     }
 
     private func scrollEditor(untilHittable element: XCUIElement) {
@@ -625,13 +629,13 @@ final class BlackboxUITests: XCTestCase {
         }
         XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
         XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
-        for _ in 0..<8 where !element.isHittable {
+        for _ in 0..<16 where !element.isHittable {
             let targetFrame = element.frame
             let editorFrame = editor.frame
             if !targetFrame.isEmpty, targetFrame.midY < editorFrame.midY {
-                editor.swipeDown()
+                editor.swipeDown(velocity: .slow)
             } else {
-                editor.swipeUp()
+                editor.swipeUp(velocity: .slow)
             }
         }
         XCTAssertTrue(element.isHittable, "Could not reveal \(element.identifier) in the flight editor")
@@ -700,6 +704,10 @@ final class BlackboxUITests: XCTestCase {
         return sheet
     }
 
+    private func flightsTable() -> XCUIElement {
+        app.descendants(matching: .any)["flights.table"]
+    }
+
     private func element(containing value: String, type: XCUIElement.ElementType) -> XCUIElement {
         app.descendants(matching: type)
             .matching(NSPredicate(format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", value, value))
@@ -713,11 +721,28 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func replaceComparisonSource(_ source: URL, with fixture: URL?) throws {
-        for url in [source, URL(fileURLWithPath: source.path + "-wal"), URL(fileURLWithPath: source.path + "-shm")] where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        let fileManager = FileManager.default
+        let sidecars = ["-wal", "-shm"].map { URL(fileURLWithPath: source.path + $0) }
+
+        guard let fixture else {
+            for url in [source] + sidecars where fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+            return
         }
-        if let fixture {
-            try FileManager.default.copyItem(at: fixture, to: source)
+
+        let staged = source.deletingLastPathComponent()
+            .appendingPathComponent(".\(source.lastPathComponent).\(UUID().uuidString).replacement")
+        defer { try? fileManager.removeItem(at: staged) }
+        try fileManager.copyItem(at: fixture, to: staged)
+
+        for sidecar in sidecars where fileManager.fileExists(atPath: sidecar.path) {
+            try fileManager.removeItem(at: sidecar)
+        }
+        if fileManager.fileExists(atPath: source.path) {
+            _ = try fileManager.replaceItemAt(source, withItemAt: staged)
+        } else {
+            try fileManager.moveItem(at: staged, to: source)
         }
     }
 
@@ -732,23 +757,32 @@ final class BlackboxUITests: XCTestCase {
     private func chooseInOpenPanel(_ url: URL) {
         let sheet = app.sheets.firstMatch
         let dialog = app.dialogs.firstMatch
+        let panelWindow = app.windows.matching(
+            NSPredicate(format: "label CONTAINS[c] 'Open' OR label CONTAINS[c] 'Choose' OR label CONTAINS[c] 'Export'")
+        ).firstMatch
+        let panelService = XCUIApplication(bundleIdentifier: "com.apple.appkit.xpc.openAndSavePanelService")
+        let serviceWindow = panelService.windows.firstMatch
         let panel: XCUIElement
         if sheet.waitForExistence(timeout: 2) {
             panel = sheet
+        } else if panelWindow.waitForExistence(timeout: 1) {
+            panel = panelWindow
+        } else if serviceWindow.waitForExistence(timeout: 2) {
+            panel = serviceWindow
         } else {
             XCTAssertTrue(dialog.waitForExistence(timeout: 3), "The file panel was neither a sheet nor an application-modal dialog")
             panel = dialog
         }
-        app.typeKey("g", modifierFlags: [.command, .shift])
+        panel.typeKey("g", modifierFlags: [.command, .shift])
         var locationField = panel.descendants(matching: .textField).firstMatch
         if !locationField.waitForExistence(timeout: 1) {
-            locationField = app.textFields.matching(NSPredicate(format: "isEnabled == YES")).firstMatch
+            locationField = panelService.textFields.matching(NSPredicate(format: "isEnabled == YES")).firstMatch
         }
         XCTAssertTrue(locationField.waitForExistence(timeout: 3), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
-        app.typeKey(.return, modifierFlags: [])
+        panel.typeKey(.return, modifierFlags: [])
         Thread.sleep(forTimeInterval: 0.4)
-        app.typeKey(.return, modifierFlags: [])
+        panel.typeKey(.return, modifierFlags: [])
     }
 }
 

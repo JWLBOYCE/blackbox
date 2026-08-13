@@ -159,7 +159,10 @@ struct AnalysisView: View {
                         Text("\(item.flightCount)").monospacedDigit().frame(width: 90, alignment: .trailing)
                         Text(LogbookFormatters.hours(item.totalMinutes)).monospacedDigit().frame(width: 110, alignment: .trailing)
                         Text(String(format: "%.0f", item.distanceNM)).monospacedDigit().frame(width: 110, alignment: .trailing)
-                    }}.buttonStyle(.plain).accessibilityHint("Open matching flights")
+                    }}
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Open matching flights")
+                    .accessibilityIdentifier("analysis.type.\(item.aircraftType.lowercased().replacingOccurrences(of: " ", with: "-"))")
                 }
             }}
         }

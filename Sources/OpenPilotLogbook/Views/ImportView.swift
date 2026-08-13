@@ -5,7 +5,22 @@ import OpenPilotLogbookCore
 struct ImportView: View {
     @ObservedObject var store: LogbookStore
     @State private var showImporter = false
-    @State private var showLogTenImporter = false
+    @State private var showMatchedChanges = false
+    @State private var requestedImporter: RequestedImporter = .documents
+
+    private enum RequestedImporter {
+        case documents
+        case logTen
+
+        var contentTypes: [UTType] {
+            switch self {
+            case .documents: return [.pdf, .image, .plainText, .commaSeparatedText]
+            case .logTen: return [.data]
+            }
+        }
+
+        var allowsMultipleSelection: Bool { self == .documents }
+    }
 
     var body: some View {
         ScrollView {
@@ -20,7 +35,8 @@ struct ImportView: View {
                 Spacer()
                 HStack(spacing: 10) {
                     Button {
-                        showLogTenImporter = true
+                        requestedImporter = .logTen
+                        showImporter = true
                     } label: {
                         Label("Import LogTen Pro", systemImage: "tray.and.arrow.down")
                     }
@@ -28,6 +44,7 @@ struct ImportView: View {
                     .accessibilityIdentifier("import.chooseLogTen")
 
                     Button {
+                        requestedImporter = .documents
                         showImporter = true
                     } label: {
                         Label("Choose Files", systemImage: "doc.badge.plus")
@@ -93,29 +110,21 @@ struct ImportView: View {
         .accessibilityIdentifier("import.screen")
         .fileImporter(
             isPresented: $showImporter,
-            allowedContentTypes: [.pdf, .image, .plainText, .commaSeparatedText],
-            allowsMultipleSelection: true
+            allowedContentTypes: requestedImporter.contentTypes,
+            allowsMultipleSelection: requestedImporter.allowsMultipleSelection
         ) { result in
-            switch result {
-            case .success(let urls):
+            switch (requestedImporter, result) {
+            case (.documents, .success(let urls)):
                 store.importDocuments(urls: urls)
-            case .failure(let error):
+            case (.documents, .failure(let error)):
                 store.statusMessage = "File selection failed: \(error)"
-            }
-        }
-        .fileImporter(
-            isPresented: $showLogTenImporter,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else {
+            case (.logTen, .success(let urls)):
+                if let url = urls.first {
+                    store.importLogTenDatabase(url: url)
+                } else {
                     store.statusMessage = "No LogTen Pro database selected."
-                    return
                 }
-                store.importLogTenDatabase(url: url)
-            case .failure(let error):
+            case (.logTen, .failure(let error)):
                 store.statusMessage = "LogTen Pro selection failed: \(error)"
             }
         }
@@ -250,55 +259,74 @@ struct ImportView: View {
     @ViewBuilder
     private func changesSection(_ plan: ImportPlan) -> some View {
         if !plan.changes.isEmpty {
-            DisclosureGroup("Matched changes (\(plan.changes.count))") {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(plan.changes) { change in
-                        let recommended = recommendedAction(for: change.existing.recordState)
-                        let requiresResolution = plan.duplicateSourceIDs.contains(change.sourcePK) || plan.conflictSourceIDs.contains(change.sourcePK)
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 10) {
-                                Toggle("Include record", isOn: resultingActionBinding(sourcePK: change.sourcePK, includedAction: recommended))
-                                    .toggleStyle(.checkbox)
-                                    .disabled(requiresResolution)
-                                Text("Source \(change.sourcePK)").monospacedDigit()
-                                Text(change.existing.routeDisplay.isEmpty ? "No route" : change.existing.routeDisplay)
-                                Spacer()
-                                if requiresResolution, plan.resolutionActions[change.sourcePK] == nil {
-                                    Label("Decision required", systemImage: "questionmark.diamond")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(OpenPilotTheme.amber)
-                                } else {
-                                    ImportActionLabel(action: action(for: change.sourcePK, in: plan))
-                                }
-                            }
-                            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 7) {
-                                GridRow {
-                                    Text("Field")
-                                    Text("Blackbox")
-                                    Text("Source")
-                                }
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                ForEach(plan.fieldSelections.filter { $0.sourcePK == change.sourcePK }) { selection in
-                                    GridRow {
-                                        Toggle(selection.field, isOn: importSelectionBinding(selection.id))
-                                            .toggleStyle(.checkbox)
-                                            .accessibilityIdentifier("import.field.\(change.sourcePK).\(selection.field.accessibilityIdentifierComponent)")
-                                        Text(selection.blackboxValue.isEmpty ? "—" : selection.blackboxValue)
-                                            .foregroundStyle(.secondary)
-                                        Text(selection.sourceValue.isEmpty ? "—" : selection.sourceValue)
-                                    }
-                                    .font(.caption)
-                                }
-                            }
-                        }
-                        .padding(12)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("import.change.\(change.sourcePK)")
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    showMatchedChanges.toggle()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showMatchedChanges ? "chevron.down" : "chevron.right")
+                            .imageScale(.small)
+                            .accessibilityHidden(true)
+                        Text("Matched changes (\(plan.changes.count))")
+                        Spacer()
                     }
+                    .contentShape(Rectangle())
                 }
-                .padding(.top, 8)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Matched changes (\(plan.changes.count))")
+                .accessibilityValue(showMatchedChanges ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("import.changes.toggle")
+
+                if showMatchedChanges {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(plan.changes) { change in
+                            let recommended = recommendedAction(for: change.existing.recordState)
+                            let requiresResolution = plan.duplicateSourceIDs.contains(change.sourcePK) || plan.conflictSourceIDs.contains(change.sourcePK)
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 10) {
+                                    Toggle("Include record", isOn: resultingActionBinding(sourcePK: change.sourcePK, includedAction: recommended))
+                                        .toggleStyle(.checkbox)
+                                        .disabled(requiresResolution)
+                                    Text("Source \(change.sourcePK)").monospacedDigit()
+                                    Text(change.existing.routeDisplay.isEmpty ? "No route" : change.existing.routeDisplay)
+                                    Spacer()
+                                    if requiresResolution, plan.resolutionActions[change.sourcePK] == nil {
+                                        Label("Decision required", systemImage: "questionmark.diamond")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(OpenPilotTheme.amber)
+                                    } else {
+                                        ImportActionLabel(action: action(for: change.sourcePK, in: plan))
+                                    }
+                                }
+                                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 7) {
+                                    GridRow {
+                                        Text("Field")
+                                        Text("Blackbox")
+                                        Text("Source")
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    ForEach(plan.fieldSelections.filter { $0.sourcePK == change.sourcePK }) { selection in
+                                        GridRow {
+                                            Toggle(selection.field, isOn: importSelectionBinding(selection.id))
+                                                .toggleStyle(.checkbox)
+                                                .accessibilityIdentifier("import.field.\(change.sourcePK).\(selection.field.accessibilityIdentifierComponent)")
+                                            Text(selection.blackboxValue.isEmpty ? "—" : selection.blackboxValue)
+                                                .foregroundStyle(.secondary)
+                                            Text(selection.sourceValue.isEmpty ? "—" : selection.sourceValue)
+                                        }
+                                        .font(.caption)
+                                    }
+                                }
+                            }
+                            .padding(12)
+                            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("import.change.\(change.sourcePK)")
+                        }
+                    }
+                    .padding(.top, 8)
+                }
             }
         }
     }

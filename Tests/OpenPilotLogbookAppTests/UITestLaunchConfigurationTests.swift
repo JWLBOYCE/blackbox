@@ -1,9 +1,17 @@
 import Foundation
 import Testing
 @testable import OpenPilotLogbook
+import OpenPilotLogbookCore
 
 @Suite("UI-test launch root safety")
 struct UITestLaunchConfigurationTests {
+    @Test("Debug launches disable live LogTen discovery")
+    func debugLaunchesDisableLiveLogTenDiscovery() {
+#if DEBUG
+        #expect(!UITestLaunchConfiguration.allowsLiveLogTenDiscoveryForCurrentLaunch())
+#endif
+    }
+
     @Test("UI test windows are fitted inside the visible screen")
     func testWindowFramesAreFittedAndCentered() {
         let visible = NSRect(x: 0, y: 0, width: 1_024, height: 768)
@@ -91,5 +99,39 @@ struct UITestLaunchConfigurationTests {
         }
         #expect(fileManager.fileExists(atPath: sentinel.path))
         #expect(try String(contentsOf: sentinel, encoding: .utf8) == "synthetic sentinel\n")
+    }
+
+    @Test("Empty comparison UI fixture is standalone and classified as empty")
+    func emptyComparisonFixtureIsStandaloneAndClassifiedAsEmpty() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let paths = UITestLaunchConfiguration.pathsForCurrentLaunch(
+            arguments: ["Blackbox", "--ui-testing"],
+            environment: [
+                "BLACKBOX_DATA_ROOT": root.path,
+                "BLACKBOX_SYNTHETIC_FIXTURE": "deterministic",
+                "BLACKBOX_UI_TEST_SCENARIO": "comparison-empty"
+            ],
+            fileManager: fileManager
+        )
+
+        #expect(fileManager.fileExists(atPath: paths.sourceLogTenDatabase.path))
+        #expect(!fileManager.fileExists(atPath: paths.sourceLogTenDatabase.path + "-wal"))
+        #expect(!fileManager.fileExists(atPath: paths.sourceLogTenDatabase.path + "-shm"))
+
+        let source = try SQLiteConnection(path: paths.sourceLogTenDatabase.path, readOnly: true)
+        let count = try source.rows("SELECT COUNT(*) AS count FROM ZFLIGHT").first?["count"]?.int
+        #expect(count == 0)
+        #expect(try source.integrityCheck().lowercased() == "ok")
+
+        let repository = LogbookRepository(paths: paths)
+        guard case .empty(let message) = repository.logTenComparisonState() else {
+            Issue.record("A valid zero-row synthetic comparison fixture must be classified as empty")
+            return
+        }
+        #expect(message.localizedCaseInsensitiveContains("no flights"))
     }
 }

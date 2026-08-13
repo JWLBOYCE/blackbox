@@ -130,6 +130,23 @@ public final class SQLiteConnection {
         }
     }
 
+    /// Checkpoints every committed WAL page into the main file and switches the
+    /// connection back to the rollback journal. The resulting database can be
+    /// copied or replaced as one file without depending on `-wal` or `-shm`
+    /// sidecars.
+    public func finalizeAsSelfContainedDatabase() throws {
+        try checkpointWAL()
+        let mode = try rows("PRAGMA journal_mode = DELETE")
+            .first?
+            .values
+            .first?
+            .string
+            .lowercased()
+        guard mode == "delete" else {
+            throw SQLiteError.step("SQLite database could not leave WAL mode for standalone use")
+        }
+    }
+
     public func transaction(_ work: () throws -> Void) throws {
         try execute("BEGIN IMMEDIATE")
         do {

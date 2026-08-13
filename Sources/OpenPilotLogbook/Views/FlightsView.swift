@@ -391,7 +391,24 @@ struct FlightEditorView: View {
                                         .disabled(binding.wrappedValue.recordState != .draft)
                                 }
                             }
-                            DisclosureGroup("Notes & Advanced", isExpanded: $showAdvanced) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Button {
+                                    showAdvanced.toggle()
+                                } label: {
+                                    HStack {
+                                        Label("Notes & Advanced", systemImage: "text.bubble")
+                                            .font(.headline)
+                                        Spacer()
+                                        Image(systemName: showAdvanced ? "chevron.down" : "chevron.right")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("flight.section.advanced.toggle")
+                                .accessibilityValue(showAdvanced ? "Expanded" : "Collapsed")
+
+                                if showAdvanced {
                             FlightSection("Notes & Signatures", systemImage: "text.bubble") {
                                 TextEditor(text: binding.remarks)
                                     .font(.callout)
@@ -404,12 +421,23 @@ struct FlightEditorView: View {
                                                     .stroke(OpenPilotTheme.border, lineWidth: 1)
                                             }
                                             .disabled(binding.wrappedValue.recordState != .draft)
-                                        TextField("Signature name", text: binding.signatureName)
-                                            .disabled(binding.wrappedValue.recordState != .draft)
-                                            .accessibilityIdentifier("flight.signature.name")
-                                        TextField("Signature reference", text: binding.signatureReference)
-                                            .disabled(binding.wrappedValue.recordState != .draft)
-                                            .accessibilityIdentifier("flight.signature.reference")
+                                        if binding.wrappedValue.recordState == .draft {
+                                            TextField("Signature name", text: binding.signatureName)
+                                                .accessibilityIdentifier("flight.signature.name")
+                                            TextField("Signature reference", text: binding.signatureReference)
+                                                .accessibilityIdentifier("flight.signature.reference")
+                                        } else {
+                                            immutableFact(
+                                                label: "Signature name",
+                                                value: binding.wrappedValue.signatureName,
+                                                identifier: "flight.signature.name"
+                                            )
+                                            immutableFact(
+                                                label: "Signature reference",
+                                                value: binding.wrappedValue.signatureReference,
+                                                identifier: "flight.signature.reference"
+                                            )
+                                        }
                                         Button(action: store.requestFinalise) {
                                             Label("Finalise & Lock", systemImage: "lock")
                                         }
@@ -418,12 +446,13 @@ struct FlightEditorView: View {
                                         .accessibilityIdentifier("flight.finalise")
                                     }
                                 }
+                                }
                             }
                                 .padding(.bottom, 14)
                             }
                             .accessibilityIdentifier("flight.editor.scroll")
                         }
-                        .onChange(of: binding.wrappedValue) { _, _ in store.draftDidChange() }
+                        .onChange(of: binding.wrappedValue) { _, _ in store.observedDraftDidChange() }
                     if binding.wrappedValue.recordState == .finalised {
                         Button(action: store.beginAmendment) {
                             Label("Create Amendment", systemImage: "doc.badge.plus")
@@ -451,6 +480,15 @@ struct FlightEditorView: View {
         } message: {
             Text("The draft will remain recoverable and can be restored with Undo. Blackbox does not permanently delete records in this release.")
         }
+    }
+
+    private func immutableFact(label: String, value: String, identifier: String) -> some View {
+        LabeledContent(label, value: value.isEmpty ? "Not entered" : value)
+            .fieldShell()
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(label)
+            .accessibilityValue(value.isEmpty ? "Not entered" : value)
+            .accessibilityIdentifier(identifier)
     }
 
     @ViewBuilder private var diagnostics: some View {

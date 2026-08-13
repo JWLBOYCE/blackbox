@@ -12,6 +12,7 @@ try runUnitTests()
 print("OpenPilotLogbookCore unit tests passed.")
 
 func runUnitTests() throws {
+    try testSelfContainedSQLiteFixture()
     try testHHMMExportsAndEscaping()
     try testPrivacyGuardBlocksPrivateArtifactsOnly()
     try testEncryptedBackupRoundTrip()
@@ -20,6 +21,31 @@ func runUnitTests() throws {
     testRosterPolicyIgnoresGroundDutiesAndNormalizesAirports()
     try testRepositoryAirportOverrideDuplicateAndComplianceGuidance()
     try testFolderAccessStoreLifecycle()
+}
+
+func testSelfContainedSQLiteFixture() throws {
+    let root = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sourceURL = root.appendingPathComponent("Source.sqlite")
+    let copiedURL = root.appendingPathComponent("Copied.sqlite")
+
+    do {
+        let source = try SQLiteConnection(path: sourceURL.path)
+        try source.execute("CREATE TABLE synthetic_flights(id INTEGER PRIMARY KEY, flight_number TEXT NOT NULL)")
+        try source.execute("INSERT INTO synthetic_flights VALUES(1, 'SYN-WAL-1')")
+        try source.finalizeAsSelfContainedDatabase()
+    }
+
+    let fileManager = FileManager.default
+    expect(!fileManager.fileExists(atPath: sourceURL.path + "-wal"), "standalone fixture should not retain a WAL")
+    try fileManager.copyItem(at: sourceURL, to: copiedURL)
+
+    let copied = try SQLiteConnection(path: copiedURL.path, readOnly: true)
+    let row = try copied.rows("SELECT id, flight_number FROM synthetic_flights").first
+    expect(row?["id"]?.int == 1, "copied standalone fixture should retain its row")
+    expect(row?["flight_number"]?.string == "SYN-WAL-1", "copied standalone fixture should retain its values")
+    let integrity = try copied.integrityCheck().lowercased()
+    expect(integrity == "ok", "copied standalone fixture should pass integrity_check")
 }
 
 func testFolderAccessStoreLifecycle() throws {

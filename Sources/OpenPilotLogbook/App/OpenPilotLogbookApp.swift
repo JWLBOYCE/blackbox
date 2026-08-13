@@ -11,6 +11,7 @@ struct OpenPilotLogbookApp: App {
         WindowGroup("Blackbox") {
             ContentView(store: store)
                 .modifier(UITestAccessibilityEnvironment())
+                .modifier(WindowUndoManagerBinding(store: store))
                 .frame(minWidth: 860, minHeight: 680)
                 .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
         }
@@ -45,6 +46,20 @@ struct OpenPilotLogbookApp: App {
                 Button("Show Logbook Pages") { store.requestSection(.pages) }
                     .keyboardShortcut("p", modifiers: [.command, .option])
             }
+        }
+    }
+}
+
+/// Connects operation Undo to the same window manager used by AppKit text
+/// controls. The standard macOS Edit > Undo/Redo commands therefore preserve
+/// native field editing while also exposing Blackbox's reversible operations.
+private struct WindowUndoManagerBinding: ViewModifier {
+    @Environment(\.undoManager) private var windowUndoManager
+    @ObservedObject var store: LogbookStore
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            store.attachWindowUndoManager(windowUndoManager)
         }
     }
 }
@@ -127,12 +142,19 @@ final class LogbookStore: ObservableObject {
     @Published var folderAccessMessage: String?
     @Published var backupPassphrase = ""
     @Published var airportOverride = AirportOverride(identifier: "", name: "", latitude: 0, longitude: 0)
+    @Published private(set) var canUndoSessionAction = false
+    @Published private(set) var canRedoSessionAction = false
+    @Published private(set) var undoCommandTitle = "Undo"
+    @Published private(set) var redoCommandTitle = "Redo"
     @Published var lastEntryKind: String {
         didSet { UserDefaults.standard.set(lastEntryKind, forKey: "OpenPilotLogbook.lastEntryKind") }
     }
     private var persistedDraft: FlightEntry?
     private var pendingExportFolder: URL?
     private let folderAccessStore: FolderAccessStore
+    private(set) var sessionUndoManager: UndoManager
+    private let shouldAttachWindowUndoManager: Bool
+    private var draftContextID = UUID()
 
     var visibleRoutes: [MapRoute] {
         guard !selectedRouteFlightIDs.isEmpty else { return routes }
@@ -158,11 +180,23 @@ final class LogbookStore: ObservableObject {
     let paths: LogbookPaths
     let platformServices: any PlatformServices
 
-    init(paths: LogbookPaths = .applicationSupport, platformServices: (any PlatformServices)? = nil, folderAccessStore: FolderAccessStore? = nil) {
+    init(
+        paths: LogbookPaths = .applicationSupport,
+        platformServices: (any PlatformServices)? = nil,
+        folderAccessStore: FolderAccessStore? = nil,
+        undoManager: UndoManager? = nil
+    ) {
         self.paths = paths
-        self.repository = LogbookRepository(paths: paths)
+        self.repository = LogbookRepository(
+            paths: paths,
+            allowsLiveLogTenDiscovery: UITestLaunchConfiguration.allowsLiveLogTenDiscoveryForCurrentLaunch()
+        )
         self.platformServices = platformServices ?? MacPlatformServices()
         self.folderAccessStore = folderAccessStore ?? FolderAccessStore()
+        self.shouldAttachWindowUndoManager = undoManager == nil
+        self.sessionUndoManager = undoManager ?? UndoManager()
+        self.sessionUndoManager.groupsByEvent = false
+        self.sessionUndoManager.levelsOfUndo = 100
         self.lastEntryKind = UserDefaults.standard.string(forKey: "OpenPilotLogbook.lastEntryKind") ?? "Flight"
         self.currencyLandingLimit = UserDefaults.standard.object(forKey: "Blackbox.currencyLandingLimit") as? Int ?? 3
         self.currencyLookbackDays = UserDefaults.standard.object(forKey: "Blackbox.currencyLookbackDays") as? Int ?? 90
@@ -348,7 +382,9 @@ final class LogbookStore: ObservableObject {
         selectFlightImmediately(id: id)
     }
 
-    func selectFlightImmediately(id: Int64?) {
+    func selectFlightImmediately(id: Int64?, preservingSessionUndo: Bool = false) {
+        if !preservingSessionUndo { clearSessionUndoForContextChange() }
+        draftContextID = UUID()
         selectedFlightID = id
         guard let id else {
             draftFlight = nil
@@ -479,6 +515,8 @@ final class LogbookStore: ObservableObject {
     }
 
     private func startNewFlightImmediately() {
+        clearSessionUndoForContextChange()
+        draftContextID = UUID()
         selectedSection = .flights
         selectedFlightID = nil
         selectedRouteFlightIDs = []
@@ -495,6 +533,8 @@ final class LogbookStore: ObservableObject {
 
     func duplicateCurrentFlight() {
         guard var draftFlight else { return }
+        clearSessionUndoForContextChange()
+        draftContextID = UUID()
         draftFlight.id = nil
         draftFlight.sourcePK = nil
         draftFlight.locked = false
@@ -590,34 +630,131 @@ final class LogbookStore: ObservableObject {
         updateDraftDiagnostics()
     }
 
+    func observedDraftDidChange() {
+        draftDidChange()
+    }
+
     func acceptSuggestion(_ suggestion: FlightSuggestion) {
         guard suggestion.isActionable, let draftFlight else { return }
         let before = draftFlight
-        self.draftFlight = FlightSuggestionEngine.applying(suggestion, to: draftFlight)
+        let after = FlightSuggestionEngine.applying(suggestion, to: draftFlight)
+        guard after != before else { return }
+        self.draftFlight = after
         draftDidChange()
-        NSApp.keyWindow?.undoManager?.registerUndo(withTarget: self) { store in
-            store.draftFlight = before
-            store.draftDidChange()
-            store.announce("Undid \(suggestion.title) suggestion")
+        let contextID = draftContextID
+        registerSessionUndo(actionName: "Accept Suggestion") { store in
+            store.restoreSuggestionFields(
+                from: before,
+                expecting: after,
+                fields: [suggestion.field],
+                contextID: contextID,
+                actionName: "Accept Suggestion",
+                message: "Undid \(suggestion.title) suggestion",
+                inverseMessage: "Redid \(suggestion.title) suggestion"
+            )
         }
-        NSApp.keyWindow?.undoManager?.setActionName("Accept Suggestion")
         announce("Accepted \(suggestion.title) suggestion")
     }
 
     func acceptSelectedSuggestions() {
         guard let draftFlight else { return }
         let batch = repository.prepareSuggestionBatch(for: draftFlight, selectedSuggestionIDs: selectedSuggestionIDs)
+        guard !batch.suggestions.isEmpty else { return }
         let before = draftFlight
+        let acceptedSuggestions = batch.suggestions.filter {
+            batch.selectedSuggestionIDs.contains($0.id) && $0.isActionable
+        }
+        let fields = acceptedSuggestions.map(\.field)
         self.draftFlight = repository.applySuggestionBatch(batch, to: draftFlight)
+        guard let after = self.draftFlight, after != before else { return }
         selectedSuggestionIDs.removeAll()
         draftDidChange()
-        NSApp.keyWindow?.undoManager?.registerUndo(withTarget: self) { store in
-            store.draftFlight = before
-            store.draftDidChange()
-            store.announce("Undid accepted suggestions")
+        let contextID = draftContextID
+        registerSessionUndo(actionName: "Accept Selected Suggestions") { store in
+            store.restoreSuggestionFields(
+                from: before,
+                expecting: after,
+                fields: fields,
+                contextID: contextID,
+                actionName: "Accept Selected Suggestions",
+                message: "Undid accepted suggestions",
+                inverseMessage: "Redid accepted suggestions"
+            )
         }
-        NSApp.keyWindow?.undoManager?.setActionName("Accept Selected Suggestions")
         announce("Accepted selected suggestions")
+    }
+
+    private func restoreSuggestionFields(
+        from target: FlightEntry,
+        expecting expectedCurrent: FlightEntry,
+        fields: [FlightSuggestionField],
+        contextID: UUID,
+        actionName: String,
+        message: String,
+        inverseMessage: String
+    ) {
+        guard draftContextID == contextID, let current = draftFlight, current.id == expectedCurrent.id else {
+            announce("Could not \(message.lowercased()): the original draft is no longer open")
+            return
+        }
+        guard fields.allSatisfy({ suggestionField($0, in: current, matches: expectedCurrent) }) else {
+            announce("Could not \(message.lowercased()): an affected field changed afterward")
+            return
+        }
+        var restored = current
+        for field in fields { copySuggestionField(field, from: target, to: &restored) }
+        draftFlight = restored
+        draftDidChange()
+        registerSessionUndo(actionName: actionName) { store in
+            store.restoreSuggestionFields(
+                from: current,
+                expecting: restored,
+                fields: fields,
+                contextID: contextID,
+                actionName: actionName,
+                message: inverseMessage,
+                inverseMessage: message
+            )
+        }
+        announce(message)
+    }
+
+    private func suggestionField(_ field: FlightSuggestionField, in lhs: FlightEntry, matches rhs: FlightEntry) -> Bool {
+        switch field {
+        case .distanceNM: return lhs.distanceNM == rhs.distanceNM
+        case .departureCoordinates: return lhs.departureLatitude == rhs.departureLatitude && lhs.departureLongitude == rhs.departureLongitude
+        case .arrivalCoordinates: return lhs.arrivalLatitude == rhs.arrivalLatitude && lhs.arrivalLongitude == rhs.arrivalLongitude
+        case .nightMinutes: return lhs.nightMinutes == rhs.nightMinutes
+        case .picMinutes: return lhs.picMinutes == rhs.picMinutes
+        case .picusMinutes: return lhs.picusMinutes == rhs.picusMinutes
+        case .copilotMinutes: return lhs.copilotMinutes == rhs.copilotMinutes
+        case .dualMinutes: return lhs.dualMinutes == rhs.dualMinutes
+        case .instructorMinutes: return lhs.instructorMinutes == rhs.instructorMinutes
+        case .fstdMinutes: return lhs.fstdMinutes == rhs.fstdMinutes
+        case .totalTakeoffs: return lhs.totalTakeoffs == rhs.totalTakeoffs
+        case .totalLandings: return lhs.totalLandings == rhs.totalLandings
+        }
+    }
+
+    private func copySuggestionField(_ field: FlightSuggestionField, from source: FlightEntry, to target: inout FlightEntry) {
+        switch field {
+        case .distanceNM: target.distanceNM = source.distanceNM
+        case .departureCoordinates:
+            target.departureLatitude = source.departureLatitude
+            target.departureLongitude = source.departureLongitude
+        case .arrivalCoordinates:
+            target.arrivalLatitude = source.arrivalLatitude
+            target.arrivalLongitude = source.arrivalLongitude
+        case .nightMinutes: target.nightMinutes = source.nightMinutes
+        case .picMinutes: target.picMinutes = source.picMinutes
+        case .picusMinutes: target.picusMinutes = source.picusMinutes
+        case .copilotMinutes: target.copilotMinutes = source.copilotMinutes
+        case .dualMinutes: target.dualMinutes = source.dualMinutes
+        case .instructorMinutes: target.instructorMinutes = source.instructorMinutes
+        case .fstdMinutes: target.fstdMinutes = source.fstdMinutes
+        case .totalTakeoffs: target.totalTakeoffs = source.totalTakeoffs
+        case .totalLandings: target.totalLandings = source.totalLandings
+        }
     }
 
     private func updateDraftDiagnostics() {
@@ -735,14 +872,16 @@ final class LogbookStore: ObservableObject {
 
     func deleteSelectedFlight() {
         guard let selectedFlightID else { return }
+        guard !isDraftDirty else {
+            announce("Save or discard unsaved changes before moving this draft to Trash")
+            return
+        }
         do {
-            try repository.moveToTrash(id: selectedFlightID)
-            self.selectedFlightID = nil
-            self.selectedRouteFlightIDs.remove(selectedFlightID)
-            self.draftFlight = nil
-            refresh()
-            NSApp.keyWindow?.undoManager?.registerUndo(withTarget: self) { store in
-                store.restoreFlightFromTrash(id: selectedFlightID)
+            try moveFlightToTrash(id: selectedFlightID, origin: "manual")
+            clearSessionUndoForContextChange()
+            draftContextID = UUID()
+            registerSessionUndo(actionName: "Move Draft to Trash") { store in
+                store.restoreFlightFromTrashForUndo(id: selectedFlightID)
             }
             announce("Moved draft to Trash. Choose Undo to restore it")
         } catch {
@@ -759,6 +898,95 @@ final class LogbookStore: ObservableObject {
         } catch {
             announce("Could not restore draft: \(error)")
         }
+    }
+
+    private func restoreFlightFromTrashForUndo(id: Int64) {
+        guard !isDraftDirty else {
+            announce("Could not restore from Undo because another draft has unsaved changes")
+            return
+        }
+        do {
+            try repository.restoreFromTrash(id: id, origin: "undo")
+            refresh()
+            selectFlightImmediately(id: id, preservingSessionUndo: true)
+            let restoredContextID = draftContextID
+            registerSessionUndo(actionName: "Move Draft to Trash") { store in
+                store.moveFlightToTrashForRedo(id: id, contextID: restoredContextID)
+            }
+            announce("Restored draft from Trash")
+        } catch {
+            announce("Could not restore draft from Undo: \(error)")
+        }
+    }
+
+    private func moveFlightToTrashForRedo(id: Int64, contextID: UUID) {
+        guard draftContextID == contextID, !isDraftDirty, draftFlight?.id == id, selectedFlightID == id else {
+            announce("Could not redo moving the draft because its editor context changed")
+            return
+        }
+        do {
+            try moveFlightToTrash(id: id, origin: "redo")
+            registerSessionUndo(actionName: "Move Draft to Trash") { store in
+                store.restoreFlightFromTrashForUndo(id: id)
+            }
+            announce("Moved draft to Trash")
+        } catch {
+            announce("Could not redo moving draft to Trash: \(error)")
+        }
+    }
+
+    private func moveFlightToTrash(id: Int64, origin: String) throws {
+        try repository.moveToTrash(id: id, origin: origin)
+        if selectedFlightID == id { selectedFlightID = nil }
+        selectedRouteFlightIDs.remove(id)
+        if draftFlight?.id == id { draftFlight = nil }
+        refresh()
+    }
+
+    func undoLastSessionAction() {
+        guard sessionUndoManager.canUndo else { return }
+        sessionUndoManager.undo()
+        updateSessionUndoCommands()
+    }
+
+    func redoLastSessionAction() {
+        guard sessionUndoManager.canRedo else { return }
+        sessionUndoManager.redo()
+        updateSessionUndoCommands()
+    }
+
+    func attachWindowUndoManager(_ undoManager: UndoManager?) {
+        guard shouldAttachWindowUndoManager, let undoManager, undoManager !== sessionUndoManager else { return }
+        sessionUndoManager.removeAllActions()
+        sessionUndoManager = undoManager
+        sessionUndoManager.levelsOfUndo = 100
+        updateSessionUndoCommands()
+    }
+
+    private func clearSessionUndoForContextChange() {
+        guard !sessionUndoManager.isUndoing, !sessionUndoManager.isRedoing else { return }
+        sessionUndoManager.removeAllActions()
+        updateSessionUndoCommands()
+    }
+
+    private func registerSessionUndo(actionName: String, action: @escaping (LogbookStore) -> Void) {
+        let startsStandaloneGroup = !sessionUndoManager.isUndoing &&
+            !sessionUndoManager.isRedoing &&
+            sessionUndoManager.groupingLevel == 0
+        if startsStandaloneGroup { sessionUndoManager.beginUndoGrouping() }
+        sessionUndoManager.registerUndo(withTarget: self, handler: action)
+        sessionUndoManager.setActionName(actionName)
+        if startsStandaloneGroup { sessionUndoManager.endUndoGrouping() }
+        if !sessionUndoManager.isUndoing && !sessionUndoManager.isRedoing {
+            updateSessionUndoCommands()
+        }
+    }
+
+    private func updateSessionUndoCommands() {
+        canUndoSessionAction = sessionUndoManager.canUndo
+        canRedoSessionAction = sessionUndoManager.canRedo
+        undoCommandTitle = sessionUndoManager.undoMenuItemTitle
+        redoCommandTitle = sessionUndoManager.redoMenuItemTitle
     }
 
     func refreshHistory() {
@@ -842,8 +1070,10 @@ final class LogbookStore: ObservableObject {
     }
 
     func chooseAndExportReports() {
-        guard let url = platformServices.chooseFolder(title: "Choose Export Folder", prompt: "Export Here") else { return }
-        requestExport(to: url)
+        platformServices.chooseFolder(title: "Choose Export Folder", prompt: "Export Here") { [weak self] url in
+            guard let self, let url else { return }
+            self.requestExport(to: url)
+        }
     }
 
     func exportToRememberedFolder() {
@@ -912,8 +1142,10 @@ final class LogbookStore: ObservableObject {
     }
 
     func chooseAndCreateEncryptedBackup() {
-        guard let url = platformServices.chooseFolder(title: "Choose Backup Folder", prompt: "Back Up Here") else { return }
-        createEncryptedBackup(in: url)
+        platformServices.chooseFolder(title: "Choose Backup Folder", prompt: "Back Up Here") { [weak self] url in
+            guard let self, let url else { return }
+            self.createEncryptedBackup(in: url)
+        }
     }
 
     func rehearseLastVerifiedRestore() {

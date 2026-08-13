@@ -4,9 +4,11 @@ import CryptoKit
 public final class LogbookRepository {
     public static let currentSchemaVersion = 4
     public let paths: LogbookPaths
+    private let allowsLiveLogTenDiscovery: Bool
 
-    public init(paths: LogbookPaths = .applicationSupport) {
+    public init(paths: LogbookPaths = .applicationSupport, allowsLiveLogTenDiscovery: Bool = false) {
         self.paths = paths
+        self.allowsLiveLogTenDiscovery = allowsLiveLogTenDiscovery
     }
 
     /// Opens an intent-writing connection only after a read-only schema gate.
@@ -2686,7 +2688,7 @@ public final class LogbookRepository {
         {
             return URL(fileURLWithPath: storedPath)
         }
-        if paths == .applicationSupport {
+        if allowsLiveLogTenDiscovery {
             let liveURL = URL(fileURLWithPath: Self.liveLogTenDatabasePath)
             if FileManager.default.fileExists(atPath: liveURL.path) {
                 return liveURL
