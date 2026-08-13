@@ -6,8 +6,9 @@
 	objects = {
 
 		A00000000000000000000001 = {isa = PBXBuildFile; productRef = A00000000000000000000021; };
-		A00000000000000000000002 = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/OpenPilotLogbook; sourceTree = "<group>"; };
+		A00000000000000000000002 = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A00000000000000000000023); path = Sources/OpenPilotLogbook; sourceTree = "<group>"; };
 		A00000000000000000000003 = {isa = PBXFileSystemSynchronizedRootGroup; path = UITests; sourceTree = "<group>"; };
+		A00000000000000000000023 = {isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = (Assets/AppIcon.icns); target = A00000000000000000000010; };
 		A00000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Blackbox.entitlements; sourceTree = "<group>"; };
 		A00000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Blackbox.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000006 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BlackboxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
