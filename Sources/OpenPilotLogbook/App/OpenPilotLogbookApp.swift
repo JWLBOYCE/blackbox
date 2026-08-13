@@ -12,7 +12,6 @@ struct OpenPilotLogbookApp: App {
             ContentView(store: store)
                 .modifier(UITestAccessibilityEnvironment())
                 .modifier(WindowCloseGuardBinding(appDelegate: appDelegate, store: store))
-                .modifier(WindowUndoManagerBinding(store: store))
                 .frame(minWidth: 860, minHeight: 680)
                 .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
         }
@@ -47,20 +46,6 @@ struct OpenPilotLogbookApp: App {
                 Button("Show Logbook Pages") { store.requestSection(.pages) }
                     .keyboardShortcut("p", modifiers: [.command, .option])
             }
-        }
-    }
-}
-
-/// Connects operation Undo to the same window manager used by AppKit text
-/// controls. The standard macOS Edit > Undo/Redo commands therefore preserve
-/// native field editing while also exposing Blackbox's reversible operations.
-private struct WindowUndoManagerBinding: ViewModifier {
-    @Environment(\.undoManager) private var windowUndoManager
-    @ObservedObject var store: LogbookStore
-
-    func body(content: Content) -> some View {
-        content.onAppear {
-            store.attachWindowUndoManager(windowUndoManager)
         }
     }
 }
@@ -132,6 +117,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isTerminationReplyPending = false
 
     func bind(window: NSWindow, store: LogbookStore) {
+        // Capture the real AppKit window manager before replacing SwiftUI's
+        // delegate. A one-shot SwiftUI environment lookup can be nil or
+        // provisional while the hosted window is still connecting, leaving
+        // operation Undo registered on a manager the responder chain never
+        // visits.
+        let windowUndoManager = window.undoManager
         self.store = store
         guard guardedWindow !== window else { return }
         if let guardedWindow, guardedWindow.delegate === self {
@@ -140,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guardedWindow = window
         forwardedWindowDelegate = window.delegate
         window.delegate = self
+        store.attachWindowUndoManager(windowUndoManager)
     }
 
     override func responds(to selector: Selector!) -> Bool {
@@ -152,6 +144,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return forwardedWindowDelegate
         }
         return super.forwardingTarget(for: selector)
+    }
+
+    /// AppKit asks the window delegate for its operation Undo manager after an
+    /// active field editor has had first refusal. This keeps native text Undo
+    /// intact while making Blackbox's durable suggestion/Trash actions
+    /// reachable through the standard Edit > Undo command and Command-Z.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        store?.sessionUndoManager
+            ?? forwardedWindowDelegate?.windowWillReturnUndoManager?(window)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

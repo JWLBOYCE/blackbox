@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import OpenPilotLogbook
@@ -6,6 +7,24 @@ import OpenPilotLogbookCore
 @Suite("Durable session Undo", .serialized)
 @MainActor
 struct SessionUndoManagerTests {
+    @Test("The primary window exposes the operation Undo manager to AppKit")
+    func primaryWindowReturnsSessionUndoManager() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanUp() }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let delegate = AppDelegate()
+        delegate.bind(window: window, store: fixture.store)
+
+        #expect(delegate.windowWillReturnUndoManager(window) === fixture.store.sessionUndoManager)
+        #expect(window.undoManager === fixture.store.sessionUndoManager)
+    }
+
     @Test("Selected suggestion acceptance supports Undo and Redo without a window")
     func suggestionBatchUndoAndRedoWithoutWindow() throws {
         let fixture = try makeStore()

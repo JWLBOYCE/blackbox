@@ -219,6 +219,7 @@ struct ImportView: View {
                                                 .labelsHidden()
                                                 .toggleStyle(.checkbox)
                                                 .accessibilityLabel("Include \(selection.field)")
+                                                .accessibilityValue(selection.decision == .include ? "Included" : "Excluded")
                                                 .accessibilityIdentifier("import.field.\(sourcePK).\(selection.field.accessibilityIdentifierComponent)")
                                             Text(selection.field)
                                             Text(selection.sourceValue.isEmpty ? "—" : selection.sourceValue)
@@ -310,6 +311,7 @@ struct ImportView: View {
                                         GridRow {
                                             Toggle(selection.field, isOn: importSelectionBinding(selection.id))
                                                 .toggleStyle(.checkbox)
+                                                .accessibilityValue(selection.decision == .include ? "Included" : "Excluded")
                                                 .accessibilityIdentifier("import.field.\(change.sourcePK).\(selection.field.accessibilityIdentifierComponent)")
                                             Text(selection.blackboxValue.isEmpty ? "—" : selection.blackboxValue)
                                                 .foregroundStyle(.secondary)

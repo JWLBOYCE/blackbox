@@ -25,6 +25,10 @@ struct MapDashboardView: View {
                     }
                 }
                 .padding(isCompact ? 16 : 24)
+                // Keep the native menu's full hit target above the hosted
+                // window edge when CI constrains the requested window to the
+                // runner display's available height.
+                .padding(.bottom, 12)
             }
         }
         .navigationTitle("3D Map")

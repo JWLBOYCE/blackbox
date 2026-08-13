@@ -124,9 +124,18 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(signatureName.waitForExistence(timeout: 5), "A finalised entry's advanced section must remain inspectable")
         XCTAssertEqual(signatureName.value as? String, "Not entered")
         XCTAssertFalse(app.textFields["flight.signature.name"].exists, "Finalised signature facts must not remain editable")
-        let totalTime = app.descendants(matching: .any)["flight.time.total"]
-        XCTAssertTrue(totalTime.exists)
-        XCTAssertFalse(totalTime.isEnabled, "Finalised entered times must remain immutable")
+
+        // The compact editor lazily removes rows that are far outside the
+        // viewport. Return towards the start, then reacquire the live query so
+        // this verifies immutability rather than off-screen virtualisation.
+        let editor = app.scrollViews["flight.editor.scroll"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 3))
+        for _ in 0..<3 { editor.swipeDown(velocity: .slow) }
+        let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
+        scrollEditor(untilHittable: totalTimeQuery)
+        let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
+        XCTAssertTrue(visibleTotalTime.waitForExistence(timeout: 5))
+        XCTAssertFalse(visibleTotalTime.isEnabled, "Finalised entered times must remain immutable")
 
         let amendment = app.buttons["Create Amendment"]
         XCTAssertTrue(amendment.waitForExistence(timeout: 5))
@@ -250,13 +259,16 @@ final class BlackboxUITests: XCTestCase {
         matchedChanges.click()
         let change = app.descendants(matching: .any)["import.change.1001"]
         XCTAssertTrue(change.waitForExistence(timeout: 3))
-        let totalField = app.checkBoxes["import.field.1001.total"]
+        let totalFieldIdentifier = "import.field.1001.total"
+        let totalField = app.checkBoxes[totalFieldIdentifier]
         XCTAssertTrue(totalField.waitForExistence(timeout: 3))
         scrollUntilHittable(totalField, in: "import.screen")
+        XCTAssertEqual(totalField.value as? String, "Included")
         totalField.click()
-        XCTAssertFalse(totalField.isSelected)
-        totalField.click()
-        XCTAssertTrue(totalField.isSelected)
+        let excludedTotalField = app.checkBoxes[totalFieldIdentifier]
+        XCTAssertTrue(waitForValue("Excluded", of: excludedTotalField, timeout: 3))
+        excludedTotalField.click()
+        XCTAssertTrue(waitForValue("Included", of: app.checkBoxes[totalFieldIdentifier], timeout: 3))
 
         let applyImport = app.buttons["import.apply"]
         scrollUntilHittable(applyImport, in: "import.screen")
@@ -442,6 +454,7 @@ final class BlackboxUITests: XCTestCase {
         openSection("3D Map", subtitle: "Route globe")
         let openShownFlight = app.descendants(matching: .any)["map.openFlight"]
         XCTAssertTrue(openShownFlight.waitForExistence(timeout: 8))
+        XCTAssertTrue(openShownFlight.isHittable, "The route menu must remain fully inside the visible map")
         let mapRange = app.descendants(matching: .any)["map.filter.range"]
         XCTAssertTrue(mapRange.waitForExistence(timeout: 5))
         mapRange.click()
@@ -682,6 +695,7 @@ final class BlackboxUITests: XCTestCase {
     private func openMapRoute(containing route: String) {
         let menu = app.descendants(matching: .any)["map.openFlight"]
         XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        XCTAssertTrue(menu.isHittable, "The route menu must remain fully inside the visible map")
         menu.click()
         let routeItem = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", route)).firstMatch
         XCTAssertTrue(routeItem.waitForExistence(timeout: 5), "Missing mapped route \(route)")
@@ -827,23 +841,12 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func chooseInOpenPanel(_ url: URL) {
-        let sheet = app.sheets.firstMatch
-        let dialog = app.dialogs.firstMatch
-        let panelWindow = app.windows.matching(
-            NSPredicate(format: "label CONTAINS[c] 'Open' OR label CONTAINS[c] 'Choose' OR label CONTAINS[c] 'Export'")
-        ).firstMatch
-        let panel: XCUIElement
-        if sheet.waitForExistence(timeout: 2) {
-            panel = sheet
-        } else if panelWindow.waitForExistence(timeout: 1) {
-            panel = panelWindow
-        } else {
-            XCTAssertTrue(dialog.waitForExistence(timeout: 3), "The file panel was neither a sheet nor an application-modal dialog")
-            panel = dialog
-        }
-        panel.typeKey("g", modifierFlags: [.command, .shift])
+        // File panels can briefly move between sheet, dialog, and window roles
+        // while AppKit attaches them. Address the application-level keyboard
+        // command instead of making that transient role a test precondition.
+        app.typeKey("g", modifierFlags: [.command, .shift])
         let locationField = app.textFields["PathTextField"]
-        XCTAssertTrue(locationField.waitForExistence(timeout: 3), "The open panel did not present Go to Folder")
+        XCTAssertTrue(locationField.waitForExistence(timeout: 8), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
         locationField.typeKey(.return, modifierFlags: [])
 
@@ -867,7 +870,7 @@ final class BlackboxUITests: XCTestCase {
             // Some hosted AppKit panel hierarchies expose the selected, enabled
             // default button with an infinite AX frame. Return invokes that
             // default action without relying on unusable geometry.
-            panel.typeKey(.return, modifierFlags: [])
+            app.typeKey(.return, modifierFlags: [])
         }
         // Each caller asserts the resulting import, restore preview, or export
         // confirmation. Do not wait on the generic first sheet here: a
@@ -878,6 +881,15 @@ final class BlackboxUITests: XCTestCase {
         let predicate = NSPredicate { object, _ in
             guard let element = object as? XCUIElement else { return false }
             return element.exists && element.isEnabled
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForValue(_ value: String, of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate { object, _ in
+            guard let element = object as? XCUIElement else { return false }
+            return element.exists && element.value as? String == value
         }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
