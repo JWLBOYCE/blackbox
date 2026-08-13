@@ -158,8 +158,9 @@ final class BlackboxUITests: XCTestCase {
         openSection("History", subtitle: "Trash and audit trail")
         let trashTable = app.tables["history.trash.table"]
         XCTAssertTrue(trashTable.waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(trashTable.rows.count, 2)
-        trashTable.rows.element(boundBy: 0).click()
+        let trashRows = trashTable.descendants(matching: .row)
+        XCTAssertGreaterThanOrEqual(trashRows.count, 2)
+        trashRows.element(boundBy: 0).click()
         app.typeKey(.downArrow, modifierFlags: .shift)
         let restoreSelected = app.buttons["history.trash.restoreSelected"]
         XCTAssertTrue(restoreSelected.waitForExistence(timeout: 3))
