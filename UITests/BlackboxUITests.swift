@@ -760,23 +760,23 @@ final class BlackboxUITests: XCTestCase {
         let panelWindow = app.windows.matching(
             NSPredicate(format: "label CONTAINS[c] 'Open' OR label CONTAINS[c] 'Choose' OR label CONTAINS[c] 'Export'")
         ).firstMatch
-        let panelService = XCUIApplication(bundleIdentifier: "com.apple.appkit.xpc.openAndSavePanelService")
-        let serviceWindow = panelService.windows.firstMatch
         let panel: XCUIElement
         if sheet.waitForExistence(timeout: 2) {
             panel = sheet
         } else if panelWindow.waitForExistence(timeout: 1) {
             panel = panelWindow
-        } else if serviceWindow.waitForExistence(timeout: 2) {
-            panel = serviceWindow
         } else {
             XCTAssertTrue(dialog.waitForExistence(timeout: 3), "The file panel was neither a sheet nor an application-modal dialog")
             panel = dialog
         }
         panel.typeKey("g", modifierFlags: [.command, .shift])
-        var locationField = panel.descendants(matching: .textField).firstMatch
+        let enabledField = NSPredicate(format: "isEnabled == YES")
+        var locationField = panel.descendants(matching: .textField).matching(enabledField).firstMatch
         if !locationField.waitForExistence(timeout: 1) {
-            locationField = panelService.textFields.matching(NSPredicate(format: "isEnabled == YES")).firstMatch
+            locationField = app.sheets.descendants(matching: .textField).matching(enabledField).firstMatch
+        }
+        if !locationField.waitForExistence(timeout: 1) {
+            locationField = app.textFields.matching(enabledField).firstMatch
         }
         XCTAssertTrue(locationField.waitForExistence(timeout: 3), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
