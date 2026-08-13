@@ -12,7 +12,11 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dataRoot.path))
 
         app = XCUIApplication()
-        app.launchArguments = ["--ui-testing"]
+        app.launchArguments = [
+            "--ui-testing",
+            "-ApplePersistenceIgnoreState", "YES",
+            "-ApplePersistenceIgnoreStateQuietly", "YES",
+        ]
         app.launchEnvironment["BLACKBOX_DATA_ROOT"] = dataRoot.path
         app.launchEnvironment["BLACKBOX_SYNTHETIC_FIXTURE"] = "deterministic"
         copyMatrixVariable("BLACKBOX_UI_TEST_APPEARANCE")
@@ -37,6 +41,7 @@ final class BlackboxUITests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
             app.terminate()
+            XCTAssertTrue(app.wait(for: .notRunning, timeout: 5), "Blackbox did not terminate cleanly after the UI test")
         }
         if let dataRoot, FileManager.default.fileExists(atPath: dataRoot.path) {
             try FileManager.default.removeItem(at: dataRoot)
@@ -532,7 +537,10 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func relaunch(extraEnvironment: [String: String]) throws {
-        if app.state != .notRunning { app.terminate() }
+        if app.state != .notRunning {
+            app.terminate()
+            XCTAssertTrue(app.wait(for: .notRunning, timeout: 5), "Blackbox did not terminate before relaunch")
+        }
         if FileManager.default.fileExists(atPath: dataRoot.path) {
             try FileManager.default.removeItem(at: dataRoot)
         }
@@ -541,7 +549,11 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dataRoot.path))
 
         app = XCUIApplication()
-        app.launchArguments = ["--ui-testing"]
+        app.launchArguments = [
+            "--ui-testing",
+            "-ApplePersistenceIgnoreState", "YES",
+            "-ApplePersistenceIgnoreStateQuietly", "YES",
+        ]
         app.launchEnvironment["BLACKBOX_DATA_ROOT"] = dataRoot.path
         app.launchEnvironment["BLACKBOX_SYNTHETIC_FIXTURE"] = "deterministic"
         copyMatrixVariable("BLACKBOX_UI_TEST_APPEARANCE")
@@ -770,19 +782,23 @@ final class BlackboxUITests: XCTestCase {
             panel = dialog
         }
         panel.typeKey("g", modifierFlags: [.command, .shift])
-        let enabledField = NSPredicate(format: "isEnabled == YES")
-        var locationField = panel.descendants(matching: .textField).matching(enabledField).firstMatch
-        if !locationField.waitForExistence(timeout: 1) {
-            locationField = app.sheets.descendants(matching: .textField).matching(enabledField).firstMatch
-        }
-        if !locationField.waitForExistence(timeout: 1) {
-            locationField = app.textFields.matching(enabledField).firstMatch
-        }
+        let locationField = app.textFields["PathTextField"]
         XCTAssertTrue(locationField.waitForExistence(timeout: 3), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
-        panel.typeKey(.return, modifierFlags: [])
-        Thread.sleep(forTimeInterval: 0.4)
-        panel.typeKey(.return, modifierFlags: [])
+        locationField.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitForNonexistence(locationField, timeout: 5), "Go to Folder did not resolve the selected path")
+
+        let action = panel.buttons.matching(
+            NSPredicate(format: "isEnabled == YES AND (label == 'Open' OR label == 'Choose' OR label == 'Export Here')")
+        ).firstMatch
+        XCTAssertTrue(action.waitForExistence(timeout: 3), "The file panel did not enable its selection action")
+        action.click()
+        XCTAssertTrue(waitForNonexistence(action, timeout: 8), "The file panel did not accept the selected path")
+    }
+
+    private func waitForNonexistence(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == NO"), object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 }
 
