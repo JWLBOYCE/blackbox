@@ -5,13 +5,16 @@ PROGRAM_NAME="$(basename "$0")"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 METADATA="$ROOT_DIR/Config/ReleaseMetadata.plist"
 APP_PATH=""
+REQUIRE_UNSIGNED=0
 
 usage() {
     cat <<USAGE
-Usage: $PROGRAM_NAME --app <path-to-Blackbox.app>
+Usage: $PROGRAM_NAME --app <path-to-Blackbox.app> [--require-unsigned]
 
 Validates release metadata and requires every packaged Mach-O binary to contain
 exactly the arm64 and x86_64 slices expected of a Universal 2 artifact.
+When --require-unsigned is present, every Mach-O item must also have no embedded
+code signature. This is intended for the CI-to-local signing handoff.
 USAGE
 }
 
@@ -33,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || fail "--app requires a value."
             APP_PATH="$2"
             shift 2
+            ;;
+        --require-unsigned)
+            REQUIRE_UNSIGNED=1
+            shift
             ;;
         -h|--help)
             usage
@@ -79,6 +86,9 @@ while IFS= read -r -d '' candidate; do
     case "$description" in
         *Mach-O*)
             native_count=$((native_count + 1))
+            if [[ $REQUIRE_UNSIGNED -eq 1 ]] && /usr/bin/codesign --display "$candidate" >/dev/null 2>&1; then
+                fail "Unsigned release input contains signed native code: ${candidate#"$APP_PATH"/}"
+            fi
             architectures="$(/usr/bin/lipo -archs "$candidate")"
             architecture_count=0
             has_arm64=0

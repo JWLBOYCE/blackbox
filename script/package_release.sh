@@ -64,6 +64,9 @@ verify_ci_manifest() {
     local manifest="$CI_MANIFEST"
     local archive_sha256
     local archive_bytes
+    local event_name
+    local pull_request_number
+    local workflow_ref
 
     /usr/bin/plutil -lint "$manifest" >/dev/null
     [[ "$(plist_value product "$manifest")" == "$PRODUCT" ]] || fail "CI manifest product does not match release metadata."
@@ -72,10 +75,36 @@ verify_ci_manifest() {
     [[ "$(plist_value build "$manifest")" == "$BUILD" ]] || fail "CI manifest build does not match release metadata."
     [[ "$(plist_value minimumSystemVersion "$manifest")" == "$MIN_SYSTEM" ]] || fail "CI manifest minimum system version does not match release metadata."
     [[ "$(plist_value sourceCommit "$manifest")" == "$SOURCE_COMMIT" ]] || fail "CI archive was not built from the checked-out commit."
-    case "$(plist_value workflowRunURL "$manifest")" in
-        https://github.com/*/actions/runs/*) ;;
-        *) fail "CI manifest workflow URL is missing or invalid." ;;
+    [[ "$(plist_value repository "$manifest")" == "JWLBOYCE/blackbox" ]] || fail "CI manifest repository is unexpected."
+    [[ "$(plist_value workflow "$manifest")" == "Swift CI" ]] || fail "CI manifest workflow is unexpected."
+    event_name="$(plist_value eventName "$manifest")"
+    workflow_ref="$(plist_value workflowRef "$manifest")"
+    case "$event_name" in
+        push)
+            [[ "$workflow_ref" == "JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/heads/main" ]] || fail "Push release input is not from the workflow on main."
+            [[ "$(plist_value sourceRef "$manifest")" == "refs/heads/main" ]] || fail "Push release input must come from the main branch."
+            [[ -z "$(plist_value headRepository "$manifest")" && -z "$(plist_value headRef "$manifest")" && -z "$(plist_value headSHA "$manifest")" && -z "$(plist_value baseRef "$manifest")" && -z "$(plist_value pullRequestNumber "$manifest")" ]] || fail "Push release input unexpectedly contains pull-request provenance."
+            ;;
+        pull_request)
+            pull_request_number="$(plist_value pullRequestNumber "$manifest")"
+            [[ "$pull_request_number" =~ ^[1-9][0-9]*$ ]] || fail "CI manifest pull-request number is invalid."
+            [[ "$(plist_value sourceRef "$manifest")" == "refs/pull/$pull_request_number/merge" ]] || fail "CI manifest pull-request trigger ref is inconsistent."
+            case "$workflow_ref" in
+                "JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/pull/$pull_request_number/merge"|"JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/heads/main") ;;
+                *) fail "Pull-request release input has an unexpected workflow reference." ;;
+            esac
+            [[ "$(plist_value headRepository "$manifest")" == "JWLBOYCE/blackbox" ]] || fail "CI release-input PR must originate in the Blackbox repository."
+            [[ "$(plist_value headRef "$manifest")" == "codex/blackbox-release-completion" ]] || fail "CI release-input PR has an unexpected head branch."
+            [[ "$(plist_value headSHA "$manifest")" == "$SOURCE_COMMIT" ]] || fail "CI release-input PR head SHA does not match the checked-out commit."
+            [[ "$(plist_value baseRef "$manifest")" == "main" ]] || fail "CI release-input PR must target main."
+            ;;
+        *)
+            fail "CI release input has an unsupported workflow event."
+            ;;
     esac
+    [[ "$(plist_value runID "$manifest")" =~ ^[0-9]+$ ]] || fail "CI manifest run ID is invalid."
+    [[ "$(plist_value runAttempt "$manifest")" =~ ^[1-9][0-9]*$ ]] || fail "CI manifest run attempt is invalid."
+    [[ "$(plist_value workflowRunURL "$manifest")" == "https://github.com/JWLBOYCE/blackbox/actions/runs/$(plist_value runID "$manifest")" ]] || fail "CI manifest workflow URL does not match its repository and run ID."
     [[ "$(plist_value xcodeVersion "$manifest")" == "Xcode 26.6" ]] || fail "CI archive was not built with Xcode 26.6."
     [[ "$(plist_value xcodeBuild "$manifest")" == "17F113" ]] || fail "CI archive was not built with Xcode build 17F113."
     [[ "$(plist_value signing "$manifest")" == "unsigned-ci-release-input" ]] || fail "CI manifest does not describe an unsigned release input."
@@ -366,13 +395,10 @@ trap 'exit 143' TERM
 /usr/bin/ditto -x -k "$CI_ARCHIVE" "$CI_EXTRACTED_DIR"
 APP_PATH="$CI_EXTRACTED_DIR/Blackbox-Unsigned.xcarchive/Products/Applications/$PRODUCT.app"
 [[ -d "$APP_PATH" && ! -L "$APP_PATH" ]] || fail "Verified CI archive does not contain the expected $PRODUCT.app."
-if /usr/bin/codesign --display "$APP_PATH" >/dev/null 2>&1; then
-    fail "Verified CI archive unexpectedly contains signed code."
-fi
+/bin/bash "$VERIFY_INPUT" --app "$APP_PATH" --require-unsigned
 
 /bin/bash "$LIVE_HASHES" verify --root "$LIVE_DATA_ROOT" --manifest "$LIVE_HASH_MANIFEST"
 LIVE_GATE_ARMED=1
-/bin/bash "$VERIFY_INPUT" --app "$APP_PATH"
 /bin/bash "$PRIVACY_SCAN" --repository "$ROOT_DIR" --app "$APP_PATH"
 
 /usr/bin/ditto "$APP_PATH" "$STAGED_APP"
@@ -437,6 +463,18 @@ MANIFEST_PLIST="$WORK_DIR/release-manifest.plist"
 /usr/bin/plutil -insert architectures -json '["arm64","x86_64"]' "$MANIFEST_PLIST"
 /usr/bin/plutil -insert sourceCommit -string "$SOURCE_COMMIT" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciWorkflowRunURL -string "$(plist_value workflowRunURL "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciRepository -string "$(plist_value repository "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciWorkflow -string "$(plist_value workflow "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciWorkflowRef -string "$(plist_value workflowRef "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciEventName -string "$(plist_value eventName "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciSourceRef -string "$(plist_value sourceRef "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciHeadRepository -string "$(plist_value headRepository "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciHeadRef -string "$(plist_value headRef "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciHeadSHA -string "$(plist_value headSHA "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciBaseRef -string "$(plist_value baseRef "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciPullRequestNumber -string "$(plist_value pullRequestNumber "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciRunID -string "$(plist_value runID "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciRunAttempt -string "$(plist_value runAttempt "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciXcodeVersion -string "$(plist_value xcodeVersion "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciXcodeBuild -string "$(plist_value xcodeBuild "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciInputArtifactFilename -string "$(basename "$CI_ARCHIVE")" "$MANIFEST_PLIST"

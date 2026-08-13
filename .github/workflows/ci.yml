@@ -13,9 +13,20 @@ jobs:
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      BLACKBOX_SOURCE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      BLACKBOX_PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+      BLACKBOX_PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+      BLACKBOX_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+      BLACKBOX_PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+      BLACKBOX_PR_NUMBER: ${{ github.event.number || '' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify checked-out source commit
+        run: test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
 
       - name: Verify pinned Xcode
         run: |
@@ -78,7 +89,7 @@ jobs:
           {
             echo '# Blackbox synthetic verification report'
             echo
-            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Commit: \`$BLACKBOX_SOURCE_COMMIT\`"
             echo "- Runner: \`$RUNNER_OS $RUNNER_ARCH\`"
             echo "- Xcode: \`$(xcodebuild -version | tr '\n' ' ' | sed 's/[[:space:]]*$//')\`"
             echo '- Data policy: deterministic synthetic fixtures under runner temporary storage only.'
@@ -108,7 +119,7 @@ jobs:
             | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
 
       - name: Build unsigned Universal 2 release archive
-        if: ${{ success() }}
+        if: ${{ success() && github.repository == 'JWLBOYCE/blackbox' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'JWLBOYCE/blackbox' && github.event.pull_request.head.ref == 'codex/blackbox-release-completion' && github.event.pull_request.base.ref == 'main')) }}
         run: |
           set -euo pipefail
 
@@ -130,6 +141,8 @@ jobs:
           test "$version" = '1.0.0'
           test "$build" = '1'
           test "$minimum_system_version" = '14.0'
+          test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
+          test -z "$(git status --porcelain --untracked-files=all)"
 
           xcodebuild archive \
             -project Blackbox.xcodeproj \
@@ -148,6 +161,20 @@ jobs:
           executable_path="$app_path/Contents/MacOS/$executable_name"
           test -x "$executable_path"
 
+          # ld emits an ad-hoc LC_CODE_SIGNATURE for Apple Silicon executables
+          # even when Xcode bundle signing is disabled. Remove those linker
+          # signatures so the CI handoff is genuinely unsigned and can be
+          # signed once, locally, with the selected Developer ID identity.
+          while IFS= read -r -d '' candidate; do
+            case "$(file -b "$candidate")" in
+              *Mach-O*)
+                if codesign --display "$candidate" >/dev/null 2>&1; then
+                  codesign --remove-signature "$candidate"
+                fi
+                ;;
+            esac
+          done < <(find "$app_path" -type f -print0)
+
           architectures="$(lipo -archs "$executable_path")"
           architecture_count=0
           has_arm64=0
@@ -161,12 +188,7 @@ jobs:
           test "$has_arm64" -eq 1
           test "$has_x86_64" -eq 1
 
-          if codesign --display "$app_path" >/dev/null 2>&1; then
-            echo 'The CI release-input archive must remain unsigned.' >&2
-            exit 1
-          fi
-
-          /bin/bash script/verify_release_input.sh --app "$app_path"
+          /bin/bash script/verify_release_input.sh --app "$app_path" --require-unsigned
           test "$(plutil -extract CFBundleIdentifier raw -o - "$info_plist")" = "$bundle_identifier"
           test "$(plutil -extract CFBundleShortVersionString raw -o - "$info_plist")" = "$version"
           test "$(plutil -extract CFBundleVersion raw -o - "$info_plist")" = "$build"
@@ -183,7 +205,19 @@ jobs:
           plutil -insert build -string "$build" "$manifest_plist"
           plutil -insert minimumSystemVersion -string "$minimum_system_version" "$manifest_plist"
           plutil -insert architectures -json '["arm64","x86_64"]' "$manifest_plist"
-          plutil -insert sourceCommit -string "$GITHUB_SHA" "$manifest_plist"
+          plutil -insert sourceCommit -string "$BLACKBOX_SOURCE_COMMIT" "$manifest_plist"
+          plutil -insert repository -string "$GITHUB_REPOSITORY" "$manifest_plist"
+          plutil -insert workflow -string "$GITHUB_WORKFLOW" "$manifest_plist"
+          plutil -insert workflowRef -string "$GITHUB_WORKFLOW_REF" "$manifest_plist"
+          plutil -insert eventName -string "$GITHUB_EVENT_NAME" "$manifest_plist"
+          plutil -insert sourceRef -string "$GITHUB_REF" "$manifest_plist"
+          plutil -insert headRepository -string "$BLACKBOX_PR_HEAD_REPOSITORY" "$manifest_plist"
+          plutil -insert headRef -string "$BLACKBOX_PR_HEAD_REF" "$manifest_plist"
+          plutil -insert headSHA -string "$BLACKBOX_PR_HEAD_SHA" "$manifest_plist"
+          plutil -insert baseRef -string "$BLACKBOX_PR_BASE_REF" "$manifest_plist"
+          plutil -insert pullRequestNumber -string "$BLACKBOX_PR_NUMBER" "$manifest_plist"
+          plutil -insert runID -string "$GITHUB_RUN_ID" "$manifest_plist"
+          plutil -insert runAttempt -string "$GITHUB_RUN_ATTEMPT" "$manifest_plist"
           plutil -insert xcodeVersion -string "$(xcodebuild -version | sed -n '1p')" "$manifest_plist"
           plutil -insert xcodeBuild -string "$(xcodebuild -version | sed -n '2p' | awk '{print $3}')" "$manifest_plist"
           plutil -insert signing -string unsigned-ci-release-input "$manifest_plist"
@@ -205,7 +239,7 @@ jobs:
           test "$(plutil -extract artifactSHA256 raw -o - "$manifest_json")" = "$archive_sha256"
 
       - name: Preserve unsigned release input
-        if: ${{ success() }}
+        if: ${{ success() && github.repository == 'JWLBOYCE/blackbox' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'JWLBOYCE/blackbox' && github.event.pull_request.head.ref == 'codex/blackbox-release-completion' && github.event.pull_request.base.ref == 'main')) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Blackbox-unsigned-universal2-release-input
