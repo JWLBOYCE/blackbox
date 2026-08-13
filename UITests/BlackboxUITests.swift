@@ -82,8 +82,9 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
         replaceText(in: textField("Departure"), with: "EGLL")
         openSection("History", subtitle: "Trash and audit trail")
-        XCTAssertTrue(alert.waitForExistence(timeout: 3))
-        alert.buttons["Save Draft"].click()
+        let failedSaveAlert = app.alerts["Unsaved Draft"]
+        XCTAssertTrue(failedSaveAlert.waitForExistence(timeout: 3))
+        failedSaveAlert.buttons["Save Draft"].click()
         XCTAssertTrue(app.staticTexts["Could not save draft: injected synthetic persistence failure"].waitForExistence(timeout: 5))
         XCTAssertEqual(textField("Departure").value as? String, "EGLL")
         XCTAssertFalse(app.staticTexts["Recover drafts and inspect every recorded change or reliability operation."].exists)
