@@ -48,6 +48,60 @@ struct UITestLaunchConfigurationTests {
         #expect(validated == candidate.standardizedFileURL.resolvingSymlinksInPath())
     }
 
+    @Test("Isolated UI-test home accepts only a direct synthetic data child")
+    func isolatedUITestHomeAcceptsOnlyDirectSyntheticDataChild() throws {
+        let syntheticRunnerHome = URL(fileURLWithPath: "/Users/Synthetic-Blackbox-Test", isDirectory: true)
+        let runnerTemporaryDirectory = syntheticRunnerHome
+            .appendingPathComponent("Library/Containers/uk.co.blackbox.logbook.UITests.xctrunner/Data/tmp", isDirectory: true)
+        let isolatedHome = runnerTemporaryDirectory
+            .appendingPathComponent("Blackbox-XCUITest-Home-\(UUID().uuidString)", isDirectory: true)
+        let candidate = isolatedHome
+            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
+
+        let validated = try UITestLaunchConfiguration.validatedRoot(
+            candidate.path,
+            temporaryDirectory: URL(fileURLWithPath: "/private/var/folders/target-process/T", isDirectory: true),
+            homeDirectory: isolatedHome
+        )
+        #expect(validated == candidate.standardizedFileURL.resolvingSymlinksInPath())
+
+        let targetTemporaryDirectory = URL(fileURLWithPath: "/private/var/folders/target-process/T", isDirectory: true)
+        let targetTemporaryHome = targetTemporaryDirectory
+            .appendingPathComponent("Blackbox-XCUITest-Home-\(UUID().uuidString)", isDirectory: true)
+        let targetTemporaryCandidate = targetTemporaryHome
+            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
+        let targetTemporaryValidated = try UITestLaunchConfiguration.validatedRoot(
+            targetTemporaryCandidate.path,
+            temporaryDirectory: targetTemporaryDirectory,
+            homeDirectory: targetTemporaryHome
+        )
+        #expect(targetTemporaryValidated == targetTemporaryCandidate.standardizedFileURL.resolvingSymlinksInPath())
+
+        let nested = candidate
+            .appendingPathComponent("Nested/Blackbox-XCUITest-Nested", isDirectory: true)
+        #expect(throws: (any Error).self) {
+            _ = try UITestLaunchConfiguration.validatedRoot(
+                nested.path,
+                temporaryDirectory: URL(fileURLWithPath: "/private/var/folders/target-process/T", isDirectory: true),
+                homeDirectory: isolatedHome
+            )
+        }
+
+        let misleadingHome = URL(
+            fileURLWithPath: "/Users/Synthetic-Blackbox-Test/Documents/Blackbox-XCUITest-Home-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let misleadingCandidate = misleadingHome
+            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
+        #expect(throws: (any Error).self) {
+            _ = try UITestLaunchConfiguration.validatedRoot(
+                misleadingCandidate.path,
+                temporaryDirectory: URL(fileURLWithPath: "/private/var/folders/target-process/T", isDirectory: true),
+                homeDirectory: misleadingHome
+            )
+        }
+    }
+
     @Test("Nested, arbitrarily named, and live roots are rejected")
     func unsafeRootsAreRejected() {
         let syntheticHome = URL(fileURLWithPath: "/Users/Synthetic-Blackbox-Test", isDirectory: true)

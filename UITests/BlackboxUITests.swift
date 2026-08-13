@@ -1,37 +1,25 @@
 import XCTest
 
 final class BlackboxUITests: XCTestCase {
+    private static let isolatedHomePrefix = "Blackbox-XCUITest-Home-"
+    private static let isolatedHomeMarker = ".blackbox-synthetic-ui-test-home"
+    private static let isolatedHomeMarkerContents = "Blackbox synthetic UI-test preference home\n"
+
     private var app: XCUIApplication!
     private var dataRoot: URL!
+    private var isolatedHome: URL!
 
     override func setUpWithError() throws {
         continueAfterFailure = false
 
-        dataRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: dataRoot.path))
-
-        app = XCUIApplication()
-        app.launchArguments = [
-            "--ui-testing",
-            "-ApplePersistenceIgnoreState", "YES",
-            "-ApplePersistenceIgnoreStateQuietly", "YES",
-        ]
-        app.launchEnvironment["BLACKBOX_DATA_ROOT"] = dataRoot.path
-        app.launchEnvironment["BLACKBOX_SYNTHETIC_FIXTURE"] = "deterministic"
-        copyMatrixVariable("BLACKBOX_UI_TEST_APPEARANCE")
-        copyMatrixVariable("BLACKBOX_UI_TEST_WIDTH")
-        copyMatrixVariable("BLACKBOX_UI_TEST_HEIGHT")
-        copyMatrixVariable("BLACKBOX_UI_TEST_INCREASE_CONTRAST")
-        copyMatrixVariable("BLACKBOX_UI_TEST_DYNAMIC_TYPE_SIZE")
-        copyMatrixVariable("BLACKBOX_UI_TEST_REDUCE_MOTION")
+        try prepareFreshSyntheticApplication()
         app.launch()
 
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 12), "Blackbox did not present its main window")
     }
 
     override func tearDownWithError() throws {
-        if app.state != .notRunning {
+        if let app, app.state != .notRunning {
             let appearance = ProcessInfo.processInfo.environment["BLACKBOX_UI_TEST_APPEARANCE"] ?? "system"
             let width = ProcessInfo.processInfo.environment["BLACKBOX_UI_TEST_WIDTH"] ?? "default"
             let textSize = ProcessInfo.processInfo.environment["BLACKBOX_UI_TEST_DYNAMIC_TYPE_SIZE"] ?? "standard-text"
@@ -41,11 +29,11 @@ final class BlackboxUITests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
             app.terminate()
-            XCTAssertTrue(app.wait(for: .notRunning, timeout: 5), "Blackbox did not terminate cleanly after the UI test")
+            let didTerminate = app.wait(for: .notRunning, timeout: 5)
+            XCTAssertTrue(didTerminate, "Blackbox did not terminate cleanly after the UI test")
+            guard didTerminate else { return }
         }
-        if let dataRoot, FileManager.default.fileExists(atPath: dataRoot.path) {
-            try FileManager.default.removeItem(at: dataRoot)
-        }
+        try removeIsolatedHomeIfPresent()
     }
 
     func testNewFlightLiteralValuesAndSaveShortcut() {
@@ -539,21 +527,42 @@ final class BlackboxUITests: XCTestCase {
     private func relaunch(extraEnvironment: [String: String]) throws {
         if app.state != .notRunning {
             app.terminate()
-            XCTAssertTrue(app.wait(for: .notRunning, timeout: 5), "Blackbox did not terminate before relaunch")
+            let didTerminate = app.wait(for: .notRunning, timeout: 5)
+            XCTAssertTrue(didTerminate, "Blackbox did not terminate before relaunch")
+            guard didTerminate else {
+                throw NSError(
+                    domain: "BlackboxUITests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Refusing to replace test state while Blackbox is running"]
+                )
+            }
         }
-        if FileManager.default.fileExists(atPath: dataRoot.path) {
-            try FileManager.default.removeItem(at: dataRoot)
-        }
-        dataRoot = FileManager.default.temporaryDirectory
+        try removeIsolatedHomeIfPresent()
+        try prepareFreshSyntheticApplication(extraEnvironment: extraEnvironment)
+        app.launch()
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 12), "Blackbox did not relaunch its synthetic UI-test window")
+    }
+
+    private func prepareFreshSyntheticApplication(extraEnvironment: [String: String] = [:]) throws {
+        let fileManager = FileManager.default
+        let temporaryDirectory = fileManager.temporaryDirectory
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        isolatedHome = temporaryDirectory
+            .appendingPathComponent("\(Self.isolatedHomePrefix)\(UUID().uuidString)", isDirectory: true)
+        XCTAssertFalse(fileManager.fileExists(atPath: isolatedHome.path))
+        try fileManager.createDirectory(at: isolatedHome, withIntermediateDirectories: false)
+        try Data(Self.isolatedHomeMarkerContents.utf8)
+            .write(to: isolatedHome.appendingPathComponent(Self.isolatedHomeMarker), options: .atomic)
+
+        dataRoot = isolatedHome
             .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: dataRoot.path))
+        XCTAssertFalse(fileManager.fileExists(atPath: dataRoot.path))
 
         app = XCUIApplication()
-        app.launchArguments = [
-            "--ui-testing",
-            "-ApplePersistenceIgnoreState", "YES",
-            "-ApplePersistenceIgnoreStateQuietly", "YES",
-        ]
+        app.launchArguments = ["--ui-testing"]
+        app.launchEnvironment["HOME"] = isolatedHome.path
+        app.launchEnvironment["CFFIXED_USER_HOME"] = isolatedHome.path
         app.launchEnvironment["BLACKBOX_DATA_ROOT"] = dataRoot.path
         app.launchEnvironment["BLACKBOX_SYNTHETIC_FIXTURE"] = "deterministic"
         copyMatrixVariable("BLACKBOX_UI_TEST_APPEARANCE")
@@ -563,8 +572,38 @@ final class BlackboxUITests: XCTestCase {
         copyMatrixVariable("BLACKBOX_UI_TEST_DYNAMIC_TYPE_SIZE")
         copyMatrixVariable("BLACKBOX_UI_TEST_REDUCE_MOTION")
         for (key, value) in extraEnvironment { app.launchEnvironment[key] = value }
-        app.launch()
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 12), "Blackbox did not relaunch its synthetic UI-test window")
+    }
+
+    private func removeIsolatedHomeIfPresent() throws {
+        guard let isolatedHome else { return }
+        guard app == nil || app.state == .notRunning else {
+            XCTFail("Refusing to remove synthetic UI-test files while Blackbox is running")
+            return
+        }
+
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: isolatedHome.path) else {
+            self.isolatedHome = nil
+            return
+        }
+
+        let canonicalHome = isolatedHome.standardizedFileURL.resolvingSymlinksInPath()
+        let canonicalTemporaryDirectory = fileManager.temporaryDirectory
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let marker = canonicalHome.appendingPathComponent(Self.isolatedHomeMarker)
+        let markerContents = try? String(contentsOf: marker, encoding: .utf8)
+        guard canonicalHome.deletingLastPathComponent() == canonicalTemporaryDirectory,
+              canonicalHome.lastPathComponent.hasPrefix(Self.isolatedHomePrefix),
+              markerContents == Self.isolatedHomeMarkerContents
+        else {
+            XCTFail("Refusing to remove an unverified synthetic UI-test home: \(canonicalHome.path)")
+            return
+        }
+
+        try fileManager.removeItem(at: canonicalHome)
+        self.isolatedHome = nil
+        dataRoot = nil
     }
 
     private func openSection(_ title: String, subtitle: String) {

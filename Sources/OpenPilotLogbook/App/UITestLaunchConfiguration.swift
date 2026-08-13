@@ -29,6 +29,7 @@ enum UITestLaunchConfiguration {
     private static let snapshotKey = "OPENPILOT_SNAPSHOT_PATH"
     private static let markerName = ".blackbox-synthetic-ui-test-root"
     private static let allowedRootPrefixes = ["Blackbox-XCUITest-", "Blackbox-Xcode-Debug"]
+    private static let isolatedUITestHomePrefix = "Blackbox-XCUITest-Home-"
     private static let uiTestRunnerBundleIdentifier = "uk.co.blackbox.logbook.UITests.xctrunner"
     private static let ephemeralLaunchPaths: LogbookPaths = makeEphemeralLaunchPaths()
 
@@ -201,7 +202,10 @@ enum UITestLaunchConfiguration {
             .standardizedFileURL
             .resolvingSymlinksInPath()
         let temporaryPrefix = temporaryRoot.path.hasSuffix("/") ? temporaryRoot.path : temporaryRoot.path + "/"
-        let uiTestRunnerTemporaryRoot = homeDirectory
+        let canonicalHome = homeDirectory
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let uiTestRunnerTemporaryRoot = canonicalHome
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Containers", isDirectory: true)
             .appendingPathComponent(uiTestRunnerBundleIdentifier, isDirectory: true)
@@ -210,10 +214,25 @@ enum UITestLaunchConfiguration {
             .standardizedFileURL
             .resolvingSymlinksInPath()
         let isDirectUITestRunnerTemporaryChild = root.deletingLastPathComponent() == uiTestRunnerTemporaryRoot
+        let canonicalHomeParent = canonicalHome.deletingLastPathComponent()
+        let isHomeBelowTargetTemporaryDirectory =
+            canonicalHome.path.hasPrefix(temporaryPrefix) && canonicalHome.path != temporaryRoot.path
+        let runnerSuffix = ["Library", "Containers", uiTestRunnerBundleIdentifier, "Data", "tmp"]
+        let homeParentComponents = canonicalHomeParent.pathComponents
+        let isHomeBelowUITestRunnerTemporaryDirectory =
+            homeParentComponents.count == 8
+                && homeParentComponents[1] == "Users"
+                && Array(homeParentComponents.suffix(runnerSuffix.count)) == runnerSuffix
+        let isRecognizedIsolatedUITestHome =
+            canonicalHome.lastPathComponent.hasPrefix(isolatedUITestHomePrefix)
+                && (isHomeBelowTargetTemporaryDirectory || isHomeBelowUITestRunnerTemporaryDirectory)
+        let isDirectIsolatedUITestHomeChild =
+            isRecognizedIsolatedUITestHome && root.deletingLastPathComponent() == canonicalHome
 
         guard
             (root.path.hasPrefix(temporaryPrefix) && root.path != temporaryRoot.path)
                 || isDirectUITestRunnerTemporaryChild
+                || isDirectIsolatedUITestHomeChild
         else {
             throw FixtureError.rootOutsideTemporaryDirectory(root.path)
         }
@@ -221,7 +240,7 @@ enum UITestLaunchConfiguration {
             throw FixtureError.invalidRootName(root.lastPathComponent)
         }
 
-        let liveRoot = homeDirectory
+        let liveRoot = canonicalHome
             .appendingPathComponent("Library/Application Support/Blackbox", isDirectory: true)
             .standardizedFileURL
             .resolvingSymlinksInPath()
