@@ -118,7 +118,10 @@ verify_ci_manifest() {
     [[ "$(plist_value releasePerformanceGates "$manifest")" == "passed" ]] || fail "CI release performance gates did not pass."
     [[ "$(plist_value smokeTests "$manifest")" == "passed" ]] || fail "CI smoke tests did not pass."
     [[ "$(plist_value snapshotMatrix "$manifest")" == "passed-72" ]] || fail "CI snapshot matrix did not pass all 72 captures."
-    [[ "$(plist_value uiTests "$manifest")" == "passed" ]] || fail "CI UI tests did not pass."
+    [[ "$(plist_value uiTests "$manifest")" == "passed-13-workflows-x-4-configurations" ]] \
+        || fail "CI did not pass all 13 workflows in Light/Dark at regular/compact widths."
+    [[ "$(plist_value accessibilityUITests "$manifest")" == "passed-focused-workflow-x-3-configurations" ]] \
+        || fail "CI did not pass the focused Increase Contrast, large-text, and Reduce Motion checks."
     [[ "$(plist_value privacyGate "$manifest")" == "passed" ]] || fail "CI privacy gate did not pass."
     [[ "$(plist_value dataPolicy "$manifest")" == "synthetic-temporary-roots-only" ]] || fail "CI manifest has an unexpected data policy."
 
@@ -485,6 +488,7 @@ MANIFEST_PLIST="$WORK_DIR/release-manifest.plist"
 /usr/bin/plutil -insert ciSmokeTests -string "$(plist_value smokeTests "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciSnapshotMatrix -string "$(plist_value snapshotMatrix "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciUITests -string "$(plist_value uiTests "$CI_MANIFEST")" "$MANIFEST_PLIST"
+/usr/bin/plutil -insert ciAccessibilityUITests -string "$(plist_value accessibilityUITests "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciPrivacyGate -string "$(plist_value privacyGate "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert ciDataPolicy -string "$(plist_value dataPolicy "$CI_MANIFEST")" "$MANIFEST_PLIST"
 /usr/bin/plutil -insert createdAt -string "$created_at" "$MANIFEST_PLIST"

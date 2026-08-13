@@ -137,6 +137,7 @@ struct ReportsView: View {
                             Button("Reveal in Finder") { store.platformServices.reveal([lastBackup.encryptedBackup]) }
                             Button("Rehearse Restore", action: store.rehearseLastVerifiedRestore)
                                 .disabled(store.backupPassphrase.isEmpty)
+                                .accessibilityIdentifier("reports.rehearseRestore")
                         }
                     }
                     .font(.callout)
@@ -153,7 +154,9 @@ struct ReportsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("Cancel Preview") { store.pendingRestorePlan = nil }.buttonStyle(.bordered)
-                            Button("Restore Verified Backup", action: store.applyPendingRestore).buttonStyle(.borderedProminent)
+                            Button("Restore Verified Backup", action: store.applyPendingRestore)
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("reports.applyRestore")
                         }
                         Button("View Operation History") { store.showHistory() }
                             .buttonStyle(.link)

@@ -134,6 +134,7 @@ struct ImportView: View {
                 MetricTile(title: "Duplicates", value: plan.duplicateSourceIDs.count.formatted(), systemImage: "doc.on.doc", tint: OpenPilotTheme.amber)
                 MetricTile(title: "Conflicts", value: plan.conflicts.count.formatted(), systemImage: "exclamationmark.octagon", tint: plan.conflicts.isEmpty ? OpenPilotTheme.green : OpenPilotTheme.red)
                 MetricTile(title: "Unchanged", value: plan.unchangedCount.formatted(), systemImage: "equal", tint: OpenPilotTheme.cyan)
+                    .accessibilityIdentifier("import.metric.unchanged")
                 MetricTile(title: "Source-only omissions", value: plan.missingFromSourceCount.formatted(), systemImage: "minus", tint: OpenPilotTheme.blue)
             }
 

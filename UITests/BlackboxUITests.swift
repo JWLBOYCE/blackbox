@@ -228,6 +228,7 @@ final class BlackboxUITests: XCTestCase {
             NSPredicate(format: "label BEGINSWITH %@", "Matched changes")
         ).firstMatch
         XCTAssertTrue(matchedChanges.waitForExistence(timeout: 3))
+        scrollUntilHittable(matchedChanges, in: "import.screen")
         matchedChanges.click()
         let change = element(containing: "Source 1001", type: .staticText)
         XCTAssertTrue(change.waitForExistence(timeout: 3))
@@ -235,12 +236,15 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Flight number"].waitForExistence(timeout: 3))
         let totalField = app.checkBoxes["import.field.1001.total"]
         XCTAssertTrue(totalField.waitForExistence(timeout: 3))
+        scrollUntilHittable(totalField, in: "import.screen")
         totalField.click()
         XCTAssertFalse(totalField.isSelected)
         totalField.click()
         XCTAssertTrue(totalField.isSelected)
 
-        app.buttons["Back Up & Apply Import"].click()
+        let applyImport = app.buttons["import.apply"]
+        scrollUntilHittable(applyImport, in: "import.screen")
+        applyImport.click()
         XCTAssertTrue(element(containing: "Imported 0 additions and reviewed 1 changes", type: .staticText).waitForExistence(timeout: 8))
         openSection("History", subtitle: "Trash and audit trail")
         app.descendants(matching: .any)["Operations"].click()
@@ -255,41 +259,63 @@ final class BlackboxUITests: XCTestCase {
         app.buttons["Choose Files"].click()
         chooseInOpenPanel(document)
         XCTAssertTrue(element(containing: "1 candidates", type: .staticText).waitForExistence(timeout: 8))
-        app.buttons["Import Selected"].click()
+        let reviewSelected = app.buttons["import.reviewSelected"]
+        scrollUntilHittable(reviewSelected, in: "import.screen")
+        reviewSelected.click()
         XCTAssertTrue(app.staticTexts["Document Import Preview"].waitForExistence(timeout: 5))
-        app.buttons["Back Up & Apply Import"].click()
+        let applyImport = app.buttons["import.apply"]
+        scrollUntilHittable(applyImport, in: "import.screen")
+        applyImport.click()
         XCTAssertTrue(element(containing: "Imported 1 additions", type: .staticText).waitForExistence(timeout: 8))
 
-        app.buttons["Choose Files"].click()
+        let chooseFiles = app.buttons["Choose Files"]
+        scrollUntilHittable(chooseFiles, in: "import.screen", preferredGesture: .down)
+        chooseFiles.click()
         chooseInOpenPanel(document)
         XCTAssertTrue(element(containing: "1 candidates", type: .staticText).waitForExistence(timeout: 8))
-        app.buttons["Import Selected"].click()
-        XCTAssertTrue(app.staticTexts["Unchanged"].waitForExistence(timeout: 5), "A repeated document batch must be matched instead of silently duplicated")
-        XCTAssertFalse(app.buttons["Back Up & Apply Import"].isEnabled)
+        scrollUntilHittable(reviewSelected, in: "import.screen")
+        reviewSelected.click()
+        let unchangedMetric = app.descendants(matching: .any)["import.metric.unchanged"]
+        XCTAssertTrue(unchangedMetric.waitForExistence(timeout: 5), "A repeated document batch must be matched instead of silently duplicated")
+        XCTAssertEqual(unchangedMetric.value as? String, "1")
+        scrollUntilHittable(applyImport, in: "import.screen")
+        XCTAssertFalse(applyImport.isEnabled)
     }
 
     func testBackupVerificationRestorePreviewAndRehearsal() throws {
         openSection("Reports", subtitle: "CSV and print")
         let passphrase = "Synthetic-Only-2026!"
-        replaceText(in: secureField("Backup passphrase"), with: passphrase)
-        app.buttons["Create Encrypted Backup"].click()
+        let passphraseField = secureField("Backup passphrase")
+        scrollUntilHittable(passphraseField, in: "reports.screen")
+        replaceText(in: passphraseField, with: passphrase)
+        let createBackup = app.buttons["reports.createBackup"]
+        scrollUntilHittable(createBackup, in: "reports.screen")
+        createBackup.click()
         XCTAssertTrue(element(containing: "Created and verified encrypted backup", type: .staticText).waitForExistence(timeout: 12))
         XCTAssertTrue(element(containing: "Last verified backup passed", type: .staticText).waitForExistence(timeout: 5))
 
-        replaceText(in: secureField("Backup passphrase"), with: passphrase)
-        app.buttons["Rehearse Restore"].click()
+        scrollUntilHittable(passphraseField, in: "reports.screen", preferredGesture: .down)
+        replaceText(in: passphraseField, with: passphrase)
+        let rehearseRestore = app.buttons["reports.rehearseRestore"]
+        scrollUntilHittable(rehearseRestore, in: "reports.screen")
+        rehearseRestore.click()
         XCTAssertTrue(element(containing: "Synthetic restore rehearsal completed", type: .staticText).waitForExistence(timeout: 12))
 
         guard let backup = firstFile(withExtension: "blackboxbackup", below: dataRoot) else {
             XCTFail("The verified synthetic backup artifact was not created")
             return
         }
-        replaceText(in: secureField("Backup passphrase"), with: passphrase)
-        app.buttons["Restore Encrypted Backup"].click()
+        scrollUntilHittable(passphraseField, in: "reports.screen", preferredGesture: .down)
+        replaceText(in: passphraseField, with: passphrase)
+        let restoreBackup = app.buttons["reports.restoreBackup"]
+        scrollUntilHittable(restoreBackup, in: "reports.screen")
+        restoreBackup.click()
         chooseInOpenPanel(backup)
         XCTAssertTrue(app.staticTexts["Verified Restore Preview"].waitForExistence(timeout: 12))
         XCTAssertTrue(element(containing: "Nothing has been changed", type: .staticText).waitForExistence(timeout: 5))
-        app.buttons["Restore Verified Backup"].click()
+        let applyRestore = app.buttons["reports.applyRestore"]
+        scrollUntilHittable(applyRestore, in: "reports.screen")
+        applyRestore.click()
         XCTAssertTrue(element(containing: "Restored encrypted backup. Recovery point", type: .staticText).waitForExistence(timeout: 12))
     }
 
@@ -298,8 +324,12 @@ final class BlackboxUITests: XCTestCase {
 
         openSection("Reports", subtitle: "CSV and print")
         let passphrase = "Synthetic-Rollback-2026!"
-        replaceText(in: secureField("Backup passphrase"), with: passphrase)
-        app.buttons["Create Encrypted Backup"].click()
+        let passphraseField = secureField("Backup passphrase")
+        scrollUntilHittable(passphraseField, in: "reports.screen")
+        replaceText(in: passphraseField, with: passphrase)
+        let createBackup = app.buttons["reports.createBackup"]
+        scrollUntilHittable(createBackup, in: "reports.screen")
+        createBackup.click()
         XCTAssertTrue(element(containing: "Created and verified encrypted backup", type: .staticText).waitForExistence(timeout: 12))
         guard let backup = firstFile(withExtension: "blackboxbackup", below: dataRoot) else {
             XCTFail("The rollback test could not find its synthetic backup")
@@ -315,11 +345,16 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Draft saved"].waitForExistence(timeout: 5))
 
         openSection("Reports", subtitle: "CSV and print")
-        replaceText(in: secureField("Backup passphrase"), with: passphrase)
-        app.buttons["Restore Encrypted Backup"].click()
+        scrollUntilHittable(passphraseField, in: "reports.screen")
+        replaceText(in: passphraseField, with: passphrase)
+        let restoreBackup = app.buttons["reports.restoreBackup"]
+        scrollUntilHittable(restoreBackup, in: "reports.screen")
+        restoreBackup.click()
         chooseInOpenPanel(backup)
         XCTAssertTrue(app.staticTexts["Verified Restore Preview"].waitForExistence(timeout: 12))
-        app.buttons["Restore Verified Backup"].click()
+        let applyRestore = app.buttons["reports.applyRestore"]
+        scrollUntilHittable(applyRestore, in: "reports.screen")
+        applyRestore.click()
         XCTAssertTrue(element(containing: "Restore failed. Verified recovery point restored", type: .staticText).waitForExistence(timeout: 12))
 
         openSection("Flights", subtitle: "Flight entries")
@@ -568,6 +603,38 @@ final class BlackboxUITests: XCTestCase {
             scrollViews.element(boundBy: scrollViews.count - 1).swipeUp()
         }
         XCTAssertTrue(element.isHittable, "Could not reveal \(element.identifier) in the flight editor")
+    }
+
+    private enum ScrollGesture: Equatable {
+        case up
+        case down
+    }
+
+    private func scrollUntilHittable(
+        _ element: XCUIElement,
+        in containerIdentifier: String,
+        preferredGesture: ScrollGesture = .up,
+        maxSwipes: Int = 16
+    ) {
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "Missing \(element.identifier) before scrolling")
+        let identifiedContainer = app.scrollViews[containerIdentifier]
+        let container = identifiedContainer.waitForExistence(timeout: 2) ? identifiedContainer : app.scrollViews.firstMatch
+        XCTAssertTrue(container.waitForExistence(timeout: 3), "Missing scroll container \(containerIdentifier)")
+
+        for _ in 0..<maxSwipes where !element.isHittable {
+            let targetFrame = element.frame
+            let containerFrame = container.frame
+            if !targetFrame.isEmpty, targetFrame.midY < containerFrame.midY {
+                container.swipeDown()
+            } else if !targetFrame.isEmpty, targetFrame.midY > containerFrame.midY {
+                container.swipeUp()
+            } else if preferredGesture == .up {
+                container.swipeUp()
+            } else {
+                container.swipeDown()
+            }
+        }
+        XCTAssertTrue(element.isHittable, "Could not reveal \(element.identifier) in \(containerIdentifier)")
     }
 
     private func element(containing value: String, type: XCUIElement.ElementType) -> XCUIElement {

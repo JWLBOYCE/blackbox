@@ -8,7 +8,8 @@ The committed XCUITest suite and snapshot runner provide automated regression ev
 
 | Evidence | What it covers | What it does not prove |
 | --- | --- | --- |
-| `Blackbox.xctestplan` | Thirteen scripted workflows in Light/Dark at regular/compact widths, Increase Contrast at both widths, and a large-text/reduced-motion configuration | Real VoiceOver speech, rotor order, Full Keyboard Access, or human usability |
+| `Blackbox.xctestplan` | All thirteen scripted workflows in Light/Dark at regular/compact widths (52 workflow executions) | Real VoiceOver speech, rotor order, Full Keyboard Access, or human usability |
+| `BlackboxAccessibility.xctestplan` | A focused keyboard, window-size, and configured-surface workflow in Increase Contrast at both widths and in large-text/reduced-motion (3 executions) | Complete workflow coverage in those extra configurations or human accessibility usability |
 | `UITests/BlackboxUITests.swift` | Stable identifiers, expected controls and statuses, shortcuts, dialogs, file panels, restoration, rollback, and deterministic synthetic fixtures | That every control has the best spoken description or that focus order is logical |
 | `script/build_and_run.sh --check` | Seventy-two synthetic principal-screen images: 12 destinations x Light/Dark/Increase Contrast x regular/compact | Keyboard reachability, spoken output, or interaction quality |
 | This walkthrough | Human verification of the behaviours automation cannot establish | Nothing until a tester records and signs the results |

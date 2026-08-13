@@ -26,9 +26,11 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Verify checked-out source commit
+        id: verify_source
         run: test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
 
       - name: Verify pinned Xcode
+        id: verify_xcode
         run: |
           test -d "$DEVELOPER_DIR"
           xcodebuild -version
@@ -36,81 +38,132 @@ jobs:
           test "$(xcodebuild -version | sed -n '2p')" = "Build version 17F113"
 
       - name: Build
+        id: build
         run: swift build
 
       - name: Unit tests
+        id: unit_tests
         run: swift run OpenPilotLogbookCoreUnitTests
 
       - name: SwiftPM test suite
+        id: swiftpm_tests
         run: swift test
 
       - name: Release performance gates
+        id: performance
         run: swift test -c release --filter fixedFixtureReleasePerformanceGates
 
       - name: Smoke tests
+        id: smoke
         run: swift run OpenPilotLogbookCoreSmokeTests
 
       - name: In-app snapshot checker
+        id: snapshots
         run: ./script/build_and_run.sh --check
 
       - name: Preserve principal-screen snapshot matrix
+        id: snapshot_artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Blackbox-principal-screen-snapshots
           path: outputs/check/*.png
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Xcode UI tests
+      - name: Verify Xcode UI test matrices
+        id: ui_matrix
         if: ${{ hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
         run: |
+          set -euo pipefail
+          plutil -convert xml1 -o /dev/null Blackbox.xctestplan
+          plutil -convert xml1 -o /dev/null BlackboxAccessibility.xctestplan
+          xmllint --noout Blackbox.xcodeproj/xcshareddata/xcschemes/Blackbox.xcscheme
+
+          test "$(grep -Ec '^      \"id\" : ' Blackbox.xctestplan)" -eq 4
+          test "$(grep -Ec '^      \"id\" : ' BlackboxAccessibility.xctestplan)" -eq 3
+          test "$(grep -Ec '^    func test[A-Za-z0-9_]+\(' UITests/BlackboxUITests.swift)" -eq 13
+
+          for configuration in 'Light Regular' 'Light Compact' 'Dark Regular' 'Dark Compact'; do
+            grep -Fq "\"name\" : \"$configuration\"" Blackbox.xctestplan
+          done
+          for configuration in 'Increase Contrast Regular' 'Increase Contrast Compact' 'Large Text Reduced Motion'; do
+            grep -Fq "\"name\" : \"$configuration\"" BlackboxAccessibility.xctestplan
+          done
+          ! grep -Eq 'Increase Contrast|Large Text Reduced Motion' Blackbox.xctestplan
+          grep -Fq 'container:BlackboxAccessibility.xctestplan' Blackbox.xcodeproj/xcshareddata/xcschemes/Blackbox.xcscheme
+
+      - name: Xcode full-workflow UI tests
+        id: ui_tests
+        if: ${{ hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
+        run: |
+          set -o pipefail
           xcodebuild test \
             -project Blackbox.xcodeproj \
             -scheme Blackbox \
             -testPlan Blackbox \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/Blackbox-DerivedData" \
-            -resultBundlePath "$RUNNER_TEMP/BlackboxUITests.xcresult"
+            -resultBundlePath "$RUNNER_TEMP/BlackboxUITests.xcresult" \
+            2>&1 | tee "$RUNNER_TEMP/Blackbox-XCUITest-console.log"
 
-      - name: Preserve UI test diagnostics
+      - name: Require full-workflow UI test evidence
+        id: ui_evidence
+        if: ${{ always() && hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
+        run: |
+          test -d "$RUNNER_TEMP/BlackboxUITests.xcresult"
+          test -s "$RUNNER_TEMP/Blackbox-XCUITest-console.log"
+
+      - name: Preserve full-workflow UI test diagnostics
+        id: ui_artifact
         if: ${{ always() && hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Blackbox-XCUITest-results
-          path: ${{ runner.temp }}/BlackboxUITests.xcresult
-          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/BlackboxUITests.xcresult
+            ${{ runner.temp }}/Blackbox-XCUITest-console.log
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Write synthetic verification report
-        if: ${{ always() }}
+      - name: Xcode focused accessibility UI tests
+        id: accessibility_ui_tests
+        if: ${{ hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
         run: |
-          report="$RUNNER_TEMP/Blackbox-verification-report.md"
-          {
-            echo '# Blackbox synthetic verification report'
-            echo
-            echo "- Commit: \`$BLACKBOX_SOURCE_COMMIT\`"
-            echo "- Runner: \`$RUNNER_OS $RUNNER_ARCH\`"
-            echo "- Xcode: \`$(xcodebuild -version | tr '\n' ' ' | sed 's/[[:space:]]*$//')\`"
-            echo '- Data policy: deterministic synthetic fixtures under runner temporary storage only.'
-            echo '- Apple credentials: none supplied to CI.'
-            echo '- Live Application Support database: unavailable to and untouched by the runner.'
-            echo '- Automated scope: core, smoke, snapshot, hosted UI, privacy, and unsigned-archive steps are recorded by their individual workflow conclusions and uploaded artifacts.'
-            echo '- Evidence rule: the presence of this report does not mean a failed, skipped, later, credential-dependent, or manual gate passed.'
-            echo '- Manual scope: keyboard-only and VoiceOver walkthroughs remain incomplete until a tester signs docs/ACCESSIBILITY_VERIFICATION.md.'
-            echo '- Distribution scope: Developer ID signing, notarization, stapling, Gatekeeper, and the final synthetic smoke launch are local credential-dependent gates and are not performed by CI.'
-          } > "$report"
+          set -o pipefail
+          xcodebuild test \
+            -project Blackbox.xcodeproj \
+            -scheme Blackbox \
+            -testPlan BlackboxAccessibility \
+            -only-testing:BlackboxUITests/BlackboxUITests/testKeyboardShortcutsAndConfiguredWindowSize \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/Blackbox-DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/BlackboxAccessibilityUITests.xcresult" \
+            2>&1 | tee "$RUNNER_TEMP/Blackbox-Accessibility-XCUITest-console.log"
 
-      - name: Preserve verification report
-        if: ${{ always() }}
+      - name: Require focused accessibility UI test evidence
+        id: accessibility_ui_evidence
+        if: ${{ always() && hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
+        run: |
+          test -d "$RUNNER_TEMP/BlackboxAccessibilityUITests.xcresult"
+          test -s "$RUNNER_TEMP/Blackbox-Accessibility-XCUITest-console.log"
+
+      - name: Preserve focused accessibility UI test diagnostics
+        id: accessibility_ui_artifact
+        if: ${{ always() && hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Blackbox-synthetic-verification-report
-          path: ${{ runner.temp }}/Blackbox-verification-report.md
+          name: Blackbox-Accessibility-XCUITest-results
+          path: |
+            ${{ runner.temp }}/BlackboxAccessibilityUITests.xcresult
+            ${{ runner.temp }}/Blackbox-Accessibility-XCUITest-console.log
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
 
       - name: Private data guard
+        id: privacy
         run: |
           ! git ls-files \
             | grep -Ev '^Sources/OpenPilotLogbookCore/Resources/airports\.csv$' \
@@ -118,7 +171,14 @@ jobs:
             | grep -Ev '^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\.swift$' \
             | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
 
+      - name: Repository hygiene
+        id: repository_hygiene
+        run: |
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=all)"
+
       - name: Build unsigned Universal 2 release archive
+        id: archive
         if: ${{ success() && github.repository == 'JWLBOYCE/blackbox' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'JWLBOYCE/blackbox' && github.event.pull_request.head.ref == 'codex/blackbox-release-completion' && github.event.pull_request.base.ref == 'main')) }}
         run: |
           set -euo pipefail
@@ -231,7 +291,8 @@ jobs:
           plutil -insert releasePerformanceGates -string passed "$manifest_plist"
           plutil -insert smokeTests -string passed "$manifest_plist"
           plutil -insert snapshotMatrix -string passed-72 "$manifest_plist"
-          plutil -insert uiTests -string passed "$manifest_plist"
+          plutil -insert uiTests -string passed-13-workflows-x-4-configurations "$manifest_plist"
+          plutil -insert accessibilityUITests -string passed-focused-workflow-x-3-configurations "$manifest_plist"
           plutil -insert privacyGate -string passed "$manifest_plist"
           plutil -insert dataPolicy -string synthetic-temporary-roots-only "$manifest_plist"
           plutil -convert json -r -o "$manifest_json" "$manifest_plist"
@@ -239,6 +300,7 @@ jobs:
           test "$(plutil -extract artifactSHA256 raw -o - "$manifest_json")" = "$archive_sha256"
 
       - name: Preserve unsigned release input
+        id: release_artifact
         if: ${{ success() && github.repository == 'JWLBOYCE/blackbox' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'JWLBOYCE/blackbox' && github.event.pull_request.head.ref == 'codex/blackbox-release-completion' && github.event.pull_request.base.ref == 'main')) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -247,5 +309,173 @@ jobs:
             ${{ runner.temp }}/Blackbox-unsigned-universal2.xcarchive.zip
             ${{ runner.temp }}/Blackbox-unsigned-universal2.manifest.plist
             ${{ runner.temp }}/Blackbox-unsigned-universal2.manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write final synthetic verification report
+        id: verification_report
+        if: ${{ always() }}
+        env:
+          VERIFY_SOURCE_OUTCOME: ${{ steps.verify_source.outcome }}
+          VERIFY_XCODE_OUTCOME: ${{ steps.verify_xcode.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          UNIT_TESTS_OUTCOME: ${{ steps.unit_tests.outcome }}
+          SWIFTPM_TESTS_OUTCOME: ${{ steps.swiftpm_tests.outcome }}
+          PERFORMANCE_OUTCOME: ${{ steps.performance.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          SNAPSHOTS_OUTCOME: ${{ steps.snapshots.outcome }}
+          SNAPSHOT_ARTIFACT_OUTCOME: ${{ steps.snapshot_artifact.outcome }}
+          SNAPSHOT_ARTIFACT_DIGEST: ${{ steps.snapshot_artifact.outputs.artifact-digest }}
+          UI_MATRIX_OUTCOME: ${{ steps.ui_matrix.outcome }}
+          UI_TESTS_OUTCOME: ${{ steps.ui_tests.outcome }}
+          UI_EVIDENCE_OUTCOME: ${{ steps.ui_evidence.outcome }}
+          UI_ARTIFACT_OUTCOME: ${{ steps.ui_artifact.outcome }}
+          UI_ARTIFACT_DIGEST: ${{ steps.ui_artifact.outputs.artifact-digest }}
+          ACCESSIBILITY_UI_TESTS_OUTCOME: ${{ steps.accessibility_ui_tests.outcome }}
+          ACCESSIBILITY_UI_EVIDENCE_OUTCOME: ${{ steps.accessibility_ui_evidence.outcome }}
+          ACCESSIBILITY_UI_ARTIFACT_OUTCOME: ${{ steps.accessibility_ui_artifact.outcome }}
+          ACCESSIBILITY_UI_ARTIFACT_DIGEST: ${{ steps.accessibility_ui_artifact.outputs.artifact-digest }}
+          PRIVACY_OUTCOME: ${{ steps.privacy.outcome }}
+          REPOSITORY_HYGIENE_OUTCOME: ${{ steps.repository_hygiene.outcome }}
+          ARCHIVE_OUTCOME: ${{ steps.archive.outcome }}
+          RELEASE_ARTIFACT_OUTCOME: ${{ steps.release_artifact.outcome }}
+          RELEASE_ARTIFACT_DIGEST: ${{ steps.release_artifact.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+
+          report="$RUNNER_TEMP/Blackbox-verification-report.md"
+          snapshot_count="unavailable"
+          snapshot_tree_sha256="unavailable"
+          ui_log_sha256="unavailable"
+          ui_result_tree_sha256="unavailable"
+          accessibility_ui_log_sha256="unavailable"
+          accessibility_ui_result_tree_sha256="unavailable"
+          release_archive_sha256="unavailable"
+          release_archive_bytes="unavailable"
+          xcode_version="unavailable"
+
+          if test -d outputs/check; then
+            snapshot_count="$(find outputs/check -type f -name '*.png' | wc -l | tr -d ' ')"
+            snapshot_tree_sha256="$(cd outputs/check && \
+              find . -type f -name '*.png' -print0 \
+                | sort -z \
+                | xargs -0 shasum -a 256 \
+                | shasum -a 256 \
+                | awk '{print $1}')"
+          fi
+          if test -s "$RUNNER_TEMP/Blackbox-XCUITest-console.log"; then
+            ui_log_sha256="$(shasum -a 256 "$RUNNER_TEMP/Blackbox-XCUITest-console.log" | awk '{print $1}')"
+          fi
+          if test -d "$RUNNER_TEMP/BlackboxUITests.xcresult"; then
+            ui_result_tree_sha256="$(cd "$RUNNER_TEMP/BlackboxUITests.xcresult" && \
+              find . -type f -print0 \
+                | sort -z \
+                | xargs -0 shasum -a 256 \
+                | shasum -a 256 \
+                | awk '{print $1}')"
+          fi
+          if test -s "$RUNNER_TEMP/Blackbox-Accessibility-XCUITest-console.log"; then
+            accessibility_ui_log_sha256="$(shasum -a 256 "$RUNNER_TEMP/Blackbox-Accessibility-XCUITest-console.log" | awk '{print $1}')"
+          fi
+          if test -d "$RUNNER_TEMP/BlackboxAccessibilityUITests.xcresult"; then
+            accessibility_ui_result_tree_sha256="$(cd "$RUNNER_TEMP/BlackboxAccessibilityUITests.xcresult" && \
+              find . -type f -print0 \
+                | sort -z \
+                | xargs -0 shasum -a 256 \
+                | shasum -a 256 \
+                | awk '{print $1}')"
+          fi
+          if test -f "$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip"; then
+            release_archive_sha256="$(shasum -a 256 "$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip" | awk '{print $1}')"
+            release_archive_bytes="$(stat -f '%z' "$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip")"
+          fi
+          if xcodebuild -version > "$RUNNER_TEMP/Blackbox-xcode-version.txt" 2>/dev/null; then
+            xcode_version="$(tr '\n' ' ' < "$RUNNER_TEMP/Blackbox-xcode-version.txt" | sed 's/[[:space:]]*$//')"
+          fi
+
+          automated_release_input_status=passed
+          for outcome in \
+            "$VERIFY_SOURCE_OUTCOME" "$VERIFY_XCODE_OUTCOME" "$BUILD_OUTCOME" \
+            "$UNIT_TESTS_OUTCOME" "$SWIFTPM_TESTS_OUTCOME" "$PERFORMANCE_OUTCOME" \
+            "$SMOKE_OUTCOME" "$SNAPSHOTS_OUTCOME" "$SNAPSHOT_ARTIFACT_OUTCOME" \
+            "$UI_MATRIX_OUTCOME" "$UI_TESTS_OUTCOME" "$UI_EVIDENCE_OUTCOME" \
+            "$UI_ARTIFACT_OUTCOME" "$ACCESSIBILITY_UI_TESTS_OUTCOME" \
+            "$ACCESSIBILITY_UI_EVIDENCE_OUTCOME" "$ACCESSIBILITY_UI_ARTIFACT_OUTCOME" \
+            "$PRIVACY_OUTCOME" "$REPOSITORY_HYGIENE_OUTCOME" "$ARCHIVE_OUTCOME" \
+            "$RELEASE_ARTIFACT_OUTCOME"; do
+            if test "$outcome" != success; then
+              automated_release_input_status=failed-or-incomplete
+            fi
+          done
+
+          {
+            echo '# Blackbox synthetic verification report'
+            echo
+            echo "- Automated release-input status: \`$automated_release_input_status\`"
+            echo "- Repository: \`$GITHUB_REPOSITORY\`"
+            echo "- Commit: \`$BLACKBOX_SOURCE_COMMIT\`"
+            echo "- Event/ref: \`$GITHUB_EVENT_NAME\` / \`$GITHUB_REF\`"
+            echo "- Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (attempt \`$GITHUB_RUN_ATTEMPT\`)"
+            echo "- Runner: \`$RUNNER_OS $RUNNER_ARCH\`"
+            echo "- Xcode: \`$xcode_version\`"
+            echo '- Data policy: deterministic synthetic fixtures under runner temporary storage only.'
+            echo '- Apple credentials: none supplied to CI.'
+            echo '- Live Application Support database: unavailable to and untouched by the runner.'
+            echo
+            echo '## Recorded automated outcomes'
+            echo
+            echo '| Gate | Outcome |'
+            echo '| --- | --- |'
+            echo "| Exact source commit | \`$VERIFY_SOURCE_OUTCOME\` |"
+            echo "| Pinned Xcode | \`$VERIFY_XCODE_OUTCOME\` |"
+            echo "| Build | \`$BUILD_OUTCOME\` |"
+            echo "| Executable unit tests | \`$UNIT_TESTS_OUTCOME\` |"
+            echo "| SwiftPM tests | \`$SWIFTPM_TESTS_OUTCOME\` |"
+            echo "| Release performance gates | \`$PERFORMANCE_OUTCOME\` |"
+            echo "| Smoke tests | \`$SMOKE_OUTCOME\` |"
+            echo "| 72-image snapshot matrix | \`$SNAPSHOTS_OUTCOME\` |"
+            echo "| Snapshot artifact upload | \`$SNAPSHOT_ARTIFACT_OUTCOME\` |"
+            echo "| Xcode test-matrix definition | \`$UI_MATRIX_OUTCOME\` |"
+            echo "| 13 Xcode UI workflows in Light/Dark regular/compact | \`$UI_TESTS_OUTCOME\` |"
+            echo "| Full-workflow result bundle and console log present | \`$UI_EVIDENCE_OUTCOME\` |"
+            echo "| Full-workflow evidence artifact upload | \`$UI_ARTIFACT_OUTCOME\` |"
+            echo "| Focused Increase Contrast, large-text, and Reduce Motion UI checks | \`$ACCESSIBILITY_UI_TESTS_OUTCOME\` |"
+            echo "| Focused accessibility result bundle and console log present | \`$ACCESSIBILITY_UI_EVIDENCE_OUTCOME\` |"
+            echo "| Focused accessibility evidence artifact upload | \`$ACCESSIBILITY_UI_ARTIFACT_OUTCOME\` |"
+            echo "| Privacy gate | \`$PRIVACY_OUTCOME\` |"
+            echo "| Git diff and clean-worktree gate | \`$REPOSITORY_HYGIENE_OUTCOME\` |"
+            echo "| Unsigned Universal 2 archive | \`$ARCHIVE_OUTCOME\` |"
+            echo "| Release-input artifact upload | \`$RELEASE_ARTIFACT_OUTCOME\` |"
+            echo
+            echo '## Artifact evidence'
+            echo
+            echo "- Snapshot files: \`$snapshot_count\`"
+            echo "- Snapshot tree SHA-256: \`$snapshot_tree_sha256\`"
+            echo "- Snapshot upload digest: \`${SNAPSHOT_ARTIFACT_DIGEST:-unavailable}\`"
+            echo "- Full-workflow Xcode console-log SHA-256: \`$ui_log_sha256\`"
+            echo "- Full-workflow Xcode result-bundle tree SHA-256: \`$ui_result_tree_sha256\`"
+            echo "- Full-workflow UI evidence upload digest: \`${UI_ARTIFACT_DIGEST:-unavailable}\`"
+            echo "- Focused accessibility Xcode console-log SHA-256: \`$accessibility_ui_log_sha256\`"
+            echo "- Focused accessibility Xcode result-bundle tree SHA-256: \`$accessibility_ui_result_tree_sha256\`"
+            echo "- Focused accessibility UI evidence upload digest: \`${ACCESSIBILITY_UI_ARTIFACT_DIGEST:-unavailable}\`"
+            echo "- Unsigned archive SHA-256: \`$release_archive_sha256\`"
+            echo "- Unsigned archive bytes: \`$release_archive_bytes\`"
+            echo "- Release-input upload digest: \`${RELEASE_ARTIFACT_DIGEST:-unavailable}\`"
+            echo '- Artifact retention: 14 days.'
+            echo
+            echo '## Evidence boundary'
+            echo
+            echo '- This report records completed CI step outcomes; its presence alone is not proof that any listed outcome succeeded.'
+            echo '- Keyboard-only and VoiceOver walkthroughs remain incomplete until a tester signs docs/ACCESSIBILITY_VERIFICATION.md.'
+            echo '- Developer ID signing, notarization, stapling, Gatekeeper assessment, final packaging, and the quarantined synthetic smoke launch are local credential-dependent gates and are not performed by CI.'
+          } > "$report"
+
+      - name: Preserve final verification report
+        id: report_artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-synthetic-verification-report
+          path: ${{ runner.temp }}/Blackbox-verification-report.md
           if-no-files-found: error
           retention-days: 14
