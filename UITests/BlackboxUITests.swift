@@ -105,7 +105,7 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(importedFlight.waitForExistence(timeout: 5))
         importedFlight.click()
 
-        let advancedSection = app.descendants(matching: .any)["flight.section.advanced"]
+        let advancedSection = app.disclosureTriangles["Notes & Advanced"]
         XCTAssertTrue(advancedSection.waitForExistence(timeout: 5))
         scrollEditor(untilHittable: advancedSection)
         advancedSection.click()
@@ -224,6 +224,11 @@ final class BlackboxUITests: XCTestCase {
         chooseInOpenPanel(dataRoot.appendingPathComponent("Import Sources/LogTenImportChanges.sql"))
 
         XCTAssertTrue(app.staticTexts["LogTen Import Preview"].waitForExistence(timeout: 8))
+        let matchedChanges = app.disclosureTriangles.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Matched changes")
+        ).firstMatch
+        XCTAssertTrue(matchedChanges.waitForExistence(timeout: 3))
+        matchedChanges.click()
         let change = element(containing: "Source 1001", type: .staticText)
         XCTAssertTrue(change.waitForExistence(timeout: 3))
         change.click()
@@ -362,7 +367,7 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(a320.waitForExistence(timeout: 5))
         a320.click()
         XCTAssertTrue(app.tables["flights.table"].waitForExistence(timeout: 6))
-        XCTAssertTrue(element(containing: "Text: A320", type: .staticText).waitForExistence(timeout: 5))
+        XCTAssertTrue(element(containing: "Type: A320", type: .staticText).waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["filters.reset"].waitForExistence(timeout: 3))
         app.buttons["filters.reset"].click()
 
@@ -453,7 +458,9 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Draft saved"].waitForExistence(timeout: 5))
         app.typeKey("d", modifierFlags: .command)
-        XCTAssertTrue(app.staticTexts["Unsaved"].waitForExistence(timeout: 3))
+        let recordStatus = app.staticTexts["Record status"]
+        XCTAssertTrue(recordStatus.waitForExistence(timeout: 3))
+        XCTAssertEqual(recordStatus.value as? String, "Unsaved draft")
 
         app.typeKey("f", modifierFlags: .command)
         let flightSearch = app.textFields["flights.search"]
@@ -593,9 +600,20 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func chooseInOpenPanel(_ url: URL) {
-        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
+        let sheet = app.sheets.firstMatch
+        let dialog = app.dialogs.firstMatch
+        let panel: XCUIElement
+        if sheet.waitForExistence(timeout: 2) {
+            panel = sheet
+        } else {
+            XCTAssertTrue(dialog.waitForExistence(timeout: 3), "The file panel was neither a sheet nor an application-modal dialog")
+            panel = dialog
+        }
         app.typeKey("g", modifierFlags: [.command, .shift])
-        let locationField = app.sheets.textFields.firstMatch
+        var locationField = panel.descendants(matching: .textField).firstMatch
+        if !locationField.waitForExistence(timeout: 1) {
+            locationField = app.textFields.matching(NSPredicate(format: "isEnabled == YES")).firstMatch
+        }
         XCTAssertTrue(locationField.waitForExistence(timeout: 3), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
         app.typeKey(.return, modifierFlags: [])
