@@ -420,8 +420,8 @@ struct FlightEditorView: View {
                                         .accessibilityIdentifier("flight.finalise")
                                     }
                                 }
+                                .accessibilityIdentifier("flight.section.advanced")
                             }
-                            .accessibilityIdentifier("flight.section.advanced")
                                 .padding(.bottom, 14)
                             }
                         }
