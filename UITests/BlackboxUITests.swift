@@ -158,7 +158,7 @@ final class BlackboxUITests: XCTestCase {
         openSection("History", subtitle: "Trash and audit trail")
         let trashTable = app.tables["history.trash.table"]
         XCTAssertTrue(trashTable.waitForExistence(timeout: 5))
-        let trashRows = trashTable.descendants(matching: .row)
+        let trashRows = trashTable.descendants(matching: .tableRow)
         XCTAssertGreaterThanOrEqual(trashRows.count, 2)
         trashRows.element(boundBy: 0).click()
         app.typeKey(.downArrow, modifierFlags: .shift)
