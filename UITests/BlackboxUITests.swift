@@ -130,8 +130,12 @@ final class BlackboxUITests: XCTestCase {
         // this verifies immutability rather than off-screen virtualisation.
         let editor = app.scrollViews["flight.editor.scroll"]
         XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        for _ in 0..<3 { editor.swipeDown(velocity: .slow) }
+        for _ in 0..<12 {
+            if app.descendants(matching: .any)["flight.time.total"].exists { break }
+            editor.swipeDown(velocity: .slow)
+        }
         let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
+        XCTAssertTrue(totalTimeQuery.waitForExistence(timeout: 3), "The entered-times section did not materialise while scrolling towards the start")
         scrollEditor(untilHittable: totalTimeQuery)
         let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
         XCTAssertTrue(visibleTotalTime.waitForExistence(timeout: 5))
