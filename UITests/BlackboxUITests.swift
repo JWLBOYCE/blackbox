@@ -52,6 +52,14 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
         replaceText(in: textField("Departure"), with: "EGLL")
 
+        let initialWindowCount = app.windows.count
+        app.typeKey("w", modifierFlags: .command)
+        let closeAlert = dialog("Unsaved Draft")
+        closeAlert.buttons["Cancel"].click()
+        XCTAssertEqual(app.windows.count, initialWindowCount, "Cancelling Command-W must keep the primary window open")
+        XCTAssertTrue(app.windows.firstMatch.exists, "Cancelling Command-W must preserve the primary window")
+        XCTAssertEqual(textField("Departure").value as? String, "EGLL", "Cancelling Command-W must preserve literal unsaved values")
+
         openSection("History", subtitle: "Trash and audit trail")
         var alert = dialog("Unsaved Draft")
         alert.buttons["Cancel"].click()
@@ -79,6 +87,19 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Could not save draft: injected synthetic persistence failure"].waitForExistence(timeout: 5))
         XCTAssertEqual(textField("Departure").value as? String, "EGLL")
         XCTAssertFalse(app.staticTexts["Recover drafts and inspect every recorded change or reliability operation."].exists)
+
+        replaceText(in: textField("Departure"), with: "EGKK")
+        app.typeKey("q", modifierFlags: .command)
+        let failedQuitSaveAlert = dialog("Unsaved Draft")
+        failedQuitSaveAlert.buttons["Save Draft & Quit"].click()
+        XCTAssertNotEqual(app.state, .notRunning, "A failed Save Draft during Command-Q must cancel termination")
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 3), "A failed Save Draft during Command-Q must keep the primary window open")
+        XCTAssertEqual(textField("Departure").value as? String, "EGKK", "A failed Save Draft during Command-Q must preserve literal unsaved values")
+
+        app.typeKey("q", modifierFlags: .command)
+        dialog("Unsaved Draft").buttons["Discard Changes & Quit"].click()
+        XCTAssertTrue(app.wait(for: .notRunning, timeout: 5), "Explicit discard must permit Blackbox to quit")
+        try relaunch(extraEnvironment: [:])
     }
 
     func testFinalisedFlightCreatesAndFinalisesAmendment() {
@@ -836,20 +857,27 @@ final class BlackboxUITests: XCTestCase {
             XCTFail("The file panel did not expose its selection action")
             return
         }
-        guard waitForActionable(action, timeout: 8) else {
+        guard waitForEnabled(action, timeout: 8) else {
             XCTFail("The file panel did not enable its selection action")
             return
         }
-        action.click()
+        if action.isHittable {
+            action.click()
+        } else {
+            // Some hosted AppKit panel hierarchies expose the selected, enabled
+            // default button with an infinite AX frame. Return invokes that
+            // default action without relying on unusable geometry.
+            panel.typeKey(.return, modifierFlags: [])
+        }
         // Each caller asserts the resulting import, restore preview, or export
         // confirmation. Do not wait on the generic first sheet here: a
         // successful selection can immediately replace it with that next sheet.
     }
 
-    private func waitForActionable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let predicate = NSPredicate { object, _ in
             guard let element = object as? XCUIElement else { return false }
-            return element.exists && element.isEnabled && element.isHittable
+            return element.exists && element.isEnabled
         }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed

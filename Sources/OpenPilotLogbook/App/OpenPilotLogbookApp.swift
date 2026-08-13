@@ -8,9 +8,10 @@ struct OpenPilotLogbookApp: App {
     @StateObject private var store = LogbookStore(paths: UITestLaunchConfiguration.pathsForCurrentLaunch())
 
     var body: some Scene {
-        WindowGroup("Blackbox") {
+        Window("Blackbox", id: "blackbox-main") {
             ContentView(store: store)
                 .modifier(UITestAccessibilityEnvironment())
+                .modifier(WindowCloseGuardBinding(appDelegate: appDelegate, store: store))
                 .modifier(WindowUndoManagerBinding(store: store))
                 .frame(minWidth: 860, minHeight: 680)
                 .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
@@ -64,7 +65,95 @@ private struct WindowUndoManagerBinding: ViewModifier {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+/// Gives the single primary window an AppKit close delegate without moving
+/// editor state out of SwiftUI. The delegate preserves SwiftUI's existing
+/// window delegate through Objective-C forwarding.
+private struct WindowCloseGuardBinding: ViewModifier {
+    let appDelegate: AppDelegate
+    @ObservedObject var store: LogbookStore
+
+    func body(content: Content) -> some View {
+        content.background {
+            WindowCloseGuardView { window in
+                appDelegate.bind(window: window, store: store)
+            }
+            .frame(width: 0, height: 0)
+        }
+    }
+}
+
+private struct WindowCloseGuardView: NSViewRepresentable {
+    let bind: @MainActor (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> WindowCloseGuardNSView {
+        WindowCloseGuardNSView(bind: bind)
+    }
+
+    func updateNSView(_ nsView: WindowCloseGuardNSView, context: Context) {
+        nsView.bind = bind
+        nsView.bindIfPossible()
+    }
+}
+
+@MainActor
+private final class WindowCloseGuardNSView: NSView {
+    var bind: @MainActor (NSWindow) -> Void
+
+    init(bind: @escaping @MainActor (NSWindow) -> Void) {
+        self.bind = bind
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        bindIfPossible()
+    }
+
+    func bindIfPossible() {
+        guard let window else { return }
+        bind(window)
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private weak var store: LogbookStore?
+    private weak var guardedWindow: NSWindow?
+    // NSWindow does not retain its delegate. Keep SwiftUI's original delegate
+    // alive while this guard forwards the callbacks it does not implement.
+    private var forwardedWindowDelegate: (any NSWindowDelegate)?
+    private weak var pendingWindowClose: NSWindow?
+    private weak var approvedWindowClose: NSWindow?
+    private var isTerminationReplyPending = false
+
+    func bind(window: NSWindow, store: LogbookStore) {
+        self.store = store
+        guard guardedWindow !== window else { return }
+        if let guardedWindow, guardedWindow.delegate === self {
+            guardedWindow.delegate = forwardedWindowDelegate
+        }
+        guardedWindow = window
+        forwardedWindowDelegate = window.delegate
+        window.delegate = self
+    }
+
+    override func responds(to selector: Selector!) -> Bool {
+        super.responds(to: selector)
+            || (forwardedWindowDelegate?.responds(to: selector) ?? false)
+    }
+
+    override func forwardingTarget(for selector: Selector!) -> Any? {
+        if forwardedWindowDelegate?.responds(to: selector) == true {
+            return forwardedWindowDelegate
+        }
+        return super.forwardingTarget(for: selector)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if AppSnapshotRunner.runIfRequested() {
             return
@@ -72,6 +161,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         UITestLaunchConfiguration.configureApplicationIfRequested()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store, store.isDraftDirty else { return .terminateNow }
+        guard pendingWindowClose == nil else { return .terminateCancel }
+        guard !isTerminationReplyPending else { return .terminateLater }
+
+        let alert = unsavedDraftTerminationAlert()
+        guard let window = sender.keyWindow ?? sender.mainWindow else {
+            return Self.terminationReply(for: alert.runModal()) {
+                store.saveDraft()
+            }
+        }
+
+        isTerminationReplyPending = true
+        alert.beginSheetModal(for: window) { [weak self, weak store] response in
+            guard let self else { return }
+            let reply = store.map { store in
+                Self.terminationReply(for: response) { store.saveDraft() }
+            } ?? .terminateCancel
+            self.isTerminationReplyPending = false
+            sender.reply(toApplicationShouldTerminate: reply == .terminateNow)
+        }
+        return .terminateLater
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if approvedWindowClose === sender {
+            approvedWindowClose = nil
+            return forwardedWindowDelegate?.windowShouldClose?(sender) ?? true
+        }
+        guard let store, store.isDraftDirty else {
+            return forwardedWindowDelegate?.windowShouldClose?(sender) ?? true
+        }
+        guard pendingWindowClose == nil else { return false }
+
+        pendingWindowClose = sender
+        unsavedDraftTerminationAlert().beginSheetModal(for: sender) { [weak self, weak store, weak sender] response in
+            guard let self else { return }
+            self.pendingWindowClose = nil
+            guard let sender, let store else { return }
+
+            switch response {
+            case .alertFirstButtonReturn:
+                guard store.saveDraft() else { return }
+            case .alertThirdButtonReturn:
+                // This changes session state only. No repository write occurs,
+                // and the process exits immediately after the approved close.
+                store.isDraftDirty = false
+            default:
+                return
+            }
+
+            self.approvedWindowClose = sender
+            sender.performClose(nil)
+        }
+        return false
+    }
+
+    static func terminationReply(
+        for response: NSApplication.ModalResponse,
+        saveDraft: () -> Bool
+    ) -> NSApplication.TerminateReply {
+        switch response {
+        case .alertFirstButtonReturn:
+            return saveDraft() ? .terminateNow : .terminateCancel
+        case .alertThirdButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+
+    private func unsavedDraftTerminationAlert() -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unsaved Draft"
+        alert.informativeText = "This draft has changes that have not been saved. Blackbox will not write or discard them unless you choose an action."
+        alert.addButton(withTitle: "Save Draft & Quit")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Discard Changes & Quit")
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+        alert.buttons[2].hasDestructiveAction = true
+        return alert
     }
 }
 
