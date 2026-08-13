@@ -9,7 +9,7 @@ import OpenPilotLogbookCore
 struct SessionUndoManagerTests {
     @Test("The primary window exposes the operation Undo manager to AppKit")
     func primaryWindowReturnsSessionUndoManager() throws {
-        let fixture = try makeStore()
+        let fixture = try makeStore(injectUndoManager: false)
         defer { fixture.cleanUp() }
 
         let window = NSWindow(
@@ -184,7 +184,7 @@ struct SessionUndoManagerTests {
         #expect(fixture.store.statusMessage == "Could not restore from Undo because another draft has unsaved changes")
     }
 
-    private func makeStore() throws -> StoreFixture {
+    private func makeStore(injectUndoManager: Bool = true) throws -> StoreFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("Blackbox-AppTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -204,7 +204,7 @@ struct SessionUndoManagerTests {
                 keyPrefix: "Synthetic.folderBookmark",
                 mode: .standard
             ),
-            undoManager: UndoManager()
+            undoManager: injectUndoManager ? UndoManager() : nil
         )
         return StoreFixture(store: store, root: root, defaults: defaults, suiteName: suiteName)
     }
