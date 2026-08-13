@@ -2891,7 +2891,11 @@ public final class LogbookRepository {
         FlightEntry(
             id: row["id"]?.int64,
             sourcePK: row["source_pk"]?.int64,
-            date: date(from: row["date"]?.string ?? "") ?? Date(),
+            // Historical minimal schemas may acquire a blank date column during
+            // additive migration. Never turn that missing fact into the current
+            // clock time: repeated reads must produce the same manifest digest,
+            // while the persisted blank remains untouched until explicitly edited.
+            date: date(from: row["date"]?.string ?? "") ?? Date(timeIntervalSince1970: 0),
             departure: row["departure"]?.string ?? "",
             arrival: row["arrival"]?.string ?? "",
             route: row["route"]?.string ?? "",

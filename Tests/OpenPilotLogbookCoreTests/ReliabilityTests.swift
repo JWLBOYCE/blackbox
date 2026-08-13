@@ -91,8 +91,9 @@ struct ReliabilityTests {
             #expect(try repository.schemaVersion() == LogbookRepository.currentSchemaVersion)
             phase = "read migrated database"
             let migrated = try SQLiteConnection(path: paths.workingDatabase.path, readOnly: true)
-            let migratedRows = try migrated.rows("SELECT locked, total_minutes, remarks, modified_at, record_state FROM flights WHERE id = 1")
+            let migratedRows = try migrated.rows("SELECT date, locked, total_minutes, remarks, modified_at, record_state FROM flights WHERE id = 1")
             let row = try #require(migratedRows.first)
+            #expect(row["date"]?.string == "", "Migration must not invent a missing legacy date")
             #expect(row["locked"]?.int == 1)
             #expect(row["total_minutes"]?.int == 77)
             #expect(row["remarks"]?.string == "Do not change")
@@ -117,6 +118,11 @@ struct ReliabilityTests {
             let migratedTables = Set(try migrated.rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0["name"]?.string })
             #expect(expectedTables.isSubset(of: migratedTables))
 
+            let firstLegacyRead = try #require(try repository.flight(id: 1))
+            let secondLegacyRead = try #require(try repository.flight(id: 1))
+            #expect(firstLegacyRead == secondLegacyRead)
+            #expect(firstLegacyRead.date == Date(timeIntervalSince1970: 0))
+
             phase = "exercise current persistence after migration"
             let draftID = try repository.saveDraft(validFlight())
             let draft = try #require(try repository.flight(id: draftID))
@@ -127,6 +133,9 @@ struct ReliabilityTests {
                 candidates: [FlightEntry(date: fixedDate(), aircraftID: "G-MIGR", totalMinutes: 21, remarks: "Post-migration import")],
                 sourceURL: root.appendingPathComponent("Synthetic Migration.pdf")
             )
+            phase = "hold sealed import plan across a clock-second boundary"
+            Thread.sleep(forTimeInterval: 1.1)
+            phase = "apply sealed import plan"
             _ = try repository.applyImport(importPlan)
             #expect(try repository.flights(query: FlightQuery(text: "Post-migration import", recordStates: [.draft])).count == 1)
         } catch {
