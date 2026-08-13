@@ -60,13 +60,12 @@ final class BlackboxUITests: XCTestCase {
         replaceText(in: textField("Departure"), with: "EGLL")
 
         openSection("History", subtitle: "Trash and audit trail")
-        let alert = app.alerts["Unsaved Draft"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 3))
+        var alert = dialog("Unsaved Draft")
         alert.buttons["Cancel"].click()
         XCTAssertEqual(textField("Departure").value as? String, "EGLL")
 
         openSection("History", subtitle: "Trash and audit trail")
-        XCTAssertTrue(alert.waitForExistence(timeout: 3))
+        alert = dialog("Unsaved Draft")
         alert.buttons["Save Draft"].click()
         XCTAssertTrue(app.staticTexts["Recover drafts and inspect every recorded change or reliability operation."].waitForExistence(timeout: 5))
 
@@ -74,7 +73,7 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
         replaceText(in: textField("Arrival"), with: "EHAM")
         openSection("History", subtitle: "Trash and audit trail")
-        XCTAssertTrue(alert.waitForExistence(timeout: 3))
+        alert = dialog("Unsaved Draft")
         alert.buttons["Discard Changes"].click()
         XCTAssertTrue(app.staticTexts["Recover drafts and inspect every recorded change or reliability operation."].waitForExistence(timeout: 5))
 
@@ -82,8 +81,7 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
         replaceText(in: textField("Departure"), with: "EGLL")
         openSection("History", subtitle: "Trash and audit trail")
-        let failedSaveAlert = app.alerts["Unsaved Draft"]
-        XCTAssertTrue(failedSaveAlert.waitForExistence(timeout: 3))
+        let failedSaveAlert = dialog("Unsaved Draft")
         failedSaveAlert.buttons["Save Draft"].click()
         XCTAssertTrue(app.staticTexts["Could not save draft: injected synthetic persistence failure"].waitForExistence(timeout: 5))
         XCTAssertEqual(textField("Departure").value as? String, "EGLL")
@@ -94,8 +92,7 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("n", modifierFlags: .command)
         XCTAssertTrue(element(containing: "Departure is missing", type: .staticText).waitForExistence(timeout: 5))
         app.typeKey(.return, modifierFlags: [.command, .shift])
-        let warningAlert = app.alerts["Finalise Entry?"]
-        XCTAssertTrue(warningAlert.waitForExistence(timeout: 3))
+        let warningAlert = dialog("Finalise Entry?")
         XCTAssertTrue(element(containing: "warning(s) remain", type: .staticText).exists)
         warningAlert.buttons["Finalise & Lock"].click()
         XCTAssertTrue(app.staticTexts["Entry finalised"].waitForExistence(timeout: 6), "Acknowledged warnings must not prevent finalisation")
@@ -123,8 +120,7 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Created an amendment draft. The finalised original is unchanged."].waitForExistence(timeout: 5))
 
         app.typeKey(.return, modifierFlags: [.command, .shift])
-        let alert = app.alerts["Finalise Entry?"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 3))
+        let alert = dialog("Finalise Entry?")
         alert.buttons["Finalise & Lock"].click()
         XCTAssertTrue(app.staticTexts["Amendment finalised; the original is preserved as superseded"].waitForExistence(timeout: 6))
         XCTAssertTrue(app.buttons["Create Amendment"].waitForExistence(timeout: 3))
@@ -147,8 +143,7 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Draft saved"].waitForExistence(timeout: 5))
 
         app.buttons["Move to Trash"].click()
-        let trashAlert = app.alerts["Move Draft to Trash?"]
-        XCTAssertTrue(trashAlert.waitForExistence(timeout: 3))
+        let trashAlert = dialog("Move Draft to Trash?")
         trashAlert.buttons["Move to Trash"].click()
         XCTAssertTrue(app.staticTexts["Moved draft to Trash. Choose Undo to restore it"].waitForExistence(timeout: 5))
 
@@ -185,9 +180,13 @@ final class BlackboxUITests: XCTestCase {
         let arrivalSelection = app.descendants(matching: .any)["Select Arrival coordinates"]
         XCTAssertTrue(departureSelection.waitForExistence(timeout: 5))
         XCTAssertTrue(arrivalSelection.waitForExistence(timeout: 5))
+        scrollEditor(untilHittable: departureSelection)
         departureSelection.click()
+        scrollEditor(untilHittable: arrivalSelection)
         arrivalSelection.click()
-        app.buttons["Accept Selected Suggestions"].click()
+        let acceptSelectedCoordinates = app.buttons["Accept Selected Suggestions"]
+        scrollEditor(untilHittable: acceptSelectedCoordinates)
+        acceptSelectedCoordinates.click()
         XCTAssertTrue(app.staticTexts["Accepted selected suggestions"].waitForExistence(timeout: 5))
 
         app.typeKey("z", modifierFlags: .command)
@@ -196,8 +195,7 @@ final class BlackboxUITests: XCTestCase {
         let suggestionFixture = element(containing: "BX-NIGHT", type: .staticText)
         XCTAssertTrue(suggestionFixture.waitForExistence(timeout: 5))
         suggestionFixture.click()
-        let unsavedAlert = app.alerts["Unsaved Draft"]
-        XCTAssertTrue(unsavedAlert.waitForExistence(timeout: 3))
+        let unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Discard Changes"].click()
 
         let nightAccept = app.buttons["suggestions.accept.nightMinutes"]
@@ -207,20 +205,27 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(nightAccept.isEnabled, "The deterministic winter-night fixture must offer a conservative night suggestion")
         XCTAssertTrue(roleAccept.isEnabled, "The exact co-pilot mapping must offer an explicit role suggestion")
 
+        scrollEditor(untilHittable: roleAccept)
         roleAccept.click()
         XCTAssertTrue(element(containing: "Accepted Co-pilot allocation suggestion", type: .staticText).waitForExistence(timeout: 5))
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(element(containing: "Undid Co-pilot allocation suggestion", type: .staticText).waitForExistence(timeout: 5))
 
-        app.checkBoxes["suggestions.select.nightMinutes"].click()
-        app.checkBoxes["suggestions.select.copilotMinutes"].click()
-        app.buttons["suggestions.acceptSelected"].click()
+        let selectNight = app.checkBoxes["suggestions.select.nightMinutes"]
+        let selectCopilot = app.checkBoxes["suggestions.select.copilotMinutes"]
+        let acceptSelected = app.buttons["suggestions.acceptSelected"]
+        scrollEditor(untilHittable: selectNight)
+        selectNight.click()
+        scrollEditor(untilHittable: selectCopilot)
+        selectCopilot.click()
+        scrollEditor(untilHittable: acceptSelected)
+        acceptSelected.click()
         XCTAssertTrue(app.staticTexts["Accepted selected suggestions"].waitForExistence(timeout: 5))
     }
 
     func testLogTenFieldPreviewApplyAndOperationHistory() {
         openSection("Import", subtitle: "PDF and OCR")
-        app.buttons["Import LogTen Pro"].click()
+        app.buttons["import.chooseLogTen"].click()
         chooseInOpenPanel(dataRoot.appendingPathComponent("Import Sources/LogTenImportChanges.sql"))
 
         XCTAssertTrue(app.staticTexts["LogTen Import Preview"].waitForExistence(timeout: 8))
@@ -256,7 +261,7 @@ final class BlackboxUITests: XCTestCase {
         try Data("12/08/2026 EGLL EHAM G-BBX3 1:20 SIC1:20 PAX120 231NM\n".utf8).write(to: document, options: .atomic)
 
         openSection("Import", subtitle: "PDF and OCR")
-        app.buttons["Choose Files"].click()
+        app.buttons["import.chooseDocuments"].click()
         chooseInOpenPanel(document)
         XCTAssertTrue(element(containing: "1 candidates", type: .staticText).waitForExistence(timeout: 8))
         let reviewSelected = app.buttons["import.reviewSelected"]
@@ -268,7 +273,7 @@ final class BlackboxUITests: XCTestCase {
         applyImport.click()
         XCTAssertTrue(element(containing: "Imported 1 additions", type: .staticText).waitForExistence(timeout: 8))
 
-        let chooseFiles = app.buttons["Choose Files"]
+        let chooseFiles = app.buttons["import.chooseDocuments"]
         scrollUntilHittable(chooseFiles, in: "import.screen", preferredGesture: .down)
         chooseFiles.click()
         chooseInOpenPanel(document)
@@ -396,8 +401,8 @@ final class BlackboxUITests: XCTestCase {
 
     func testSharedFiltersAnalysisDrillDownAndMapToFlightNavigation() {
         openSection("Analysis", subtitle: "Types and places")
-        XCTAssertTrue(app.buttons["Record states"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Saved Groups"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["analysis.recordStates"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["analysis.savedGroups"].exists)
         let a320 = element(containing: "A320", type: .button)
         XCTAssertTrue(a320.waitForExistence(timeout: 5))
         a320.click()
@@ -424,14 +429,15 @@ final class BlackboxUITests: XCTestCase {
         app.buttons["filters.reset"].click()
 
         openSection("3D Map", subtitle: "Route globe")
-        XCTAssertTrue(app.buttons["Open a shown flight"].waitForExistence(timeout: 8))
+        let openShownFlight = app.descendants(matching: .any)["map.openFlight"]
+        XCTAssertTrue(openShownFlight.waitForExistence(timeout: 8))
         let mapRange = app.descendants(matching: .any)["map.filter.range"]
         XCTAssertTrue(mapRange.waitForExistence(timeout: 5))
         mapRange.click()
         app.menuItems["12 months"].click()
         XCTAssertTrue(element(containing: "From ", type: .staticText).waitForExistence(timeout: 5))
 
-        app.buttons["Open a shown flight"].click()
+        openShownFlight.click()
         let editableRoute = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", "EHAM → EDDF")).firstMatch
         XCTAssertTrue(editableRoute.waitForExistence(timeout: 5))
         editableRoute.click()
@@ -439,13 +445,12 @@ final class BlackboxUITests: XCTestCase {
 
         replaceText(in: textField("Route"), with: "DCT-SAVE")
         openSection("3D Map", subtitle: "Route globe")
-        let unsavedAlert = app.alerts["Unsaved Draft"]
-        XCTAssertTrue(unsavedAlert.waitForExistence(timeout: 3))
+        var unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Cancel"].click()
         XCTAssertEqual(textField("Route").value as? String, "DCT-SAVE")
 
         openSection("3D Map", subtitle: "Route globe")
-        XCTAssertTrue(unsavedAlert.waitForExistence(timeout: 3))
+        unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Save Draft"].click()
         XCTAssertTrue(app.descendants(matching: .any)["map.screen"].waitForExistence(timeout: 6))
         openMapRoute(containing: "EHAM → EDDF")
@@ -453,7 +458,7 @@ final class BlackboxUITests: XCTestCase {
 
         replaceText(in: textField("Route"), with: "DCT-DISCARD")
         openSection("3D Map", subtitle: "Route globe")
-        XCTAssertTrue(unsavedAlert.waitForExistence(timeout: 3))
+        unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Discard Changes"].click()
         XCTAssertTrue(app.descendants(matching: .any)["map.screen"].waitForExistence(timeout: 6))
         openMapRoute(containing: "EHAM → EDDF")
@@ -466,8 +471,7 @@ final class BlackboxUITests: XCTestCase {
         let destination = dataRoot.appendingPathComponent("Exports", isDirectory: true)
         app.buttons["Choose Export Folder"].click()
         chooseInOpenPanel(destination)
-        let exportAlert = app.alerts["Confirm CAA-format Export"]
-        XCTAssertTrue(exportAlert.waitForExistence(timeout: 5))
+        let exportAlert = dialog("Confirm CAA-format Export")
         XCTAssertTrue(element(containing: "exactly 1 finalised active record", type: .staticText).exists)
         exportAlert.buttons["Export CAA-format Report"].click()
         XCTAssertTrue(element(containing: "Exported 1 finalised record", type: .staticText).waitForExistence(timeout: 8))
@@ -485,7 +489,14 @@ final class BlackboxUITests: XCTestCase {
     func testKeyboardShortcutsAndConfiguredWindowSize() {
         let requestedWidth = Double(ProcessInfo.processInfo.environment["BLACKBOX_UI_TEST_WIDTH"] ?? "0") ?? 0
         if requestedWidth > 0 {
-            XCTAssertEqual(app.windows.firstMatch.frame.width, CGFloat(requestedWidth), accuracy: 8)
+            let displayFrame = app.screenshot().image.size
+            let windowFrame = app.windows.firstMatch.frame
+            let expectedWidth = min(CGFloat(requestedWidth), displayFrame.width - 24)
+            XCTAssertEqual(windowFrame.width, expectedWidth, accuracy: 8)
+            XCTAssertGreaterThanOrEqual(windowFrame.minX, 0)
+            XCTAssertGreaterThanOrEqual(windowFrame.minY, 0)
+            XCTAssertLessThanOrEqual(windowFrame.maxX, displayFrame.width)
+            XCTAssertLessThanOrEqual(windowFrame.maxY, displayFrame.height)
         }
 
         let initialWindowCount = app.windows.count
@@ -506,8 +517,7 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
 
         app.typeKey(.return, modifierFlags: [.command, .shift])
-        let finaliseAlert = app.alerts["Finalise Entry?"]
-        XCTAssertTrue(finaliseAlert.waitForExistence(timeout: 3))
+        let finaliseAlert = dialog("Finalise Entry?")
         finaliseAlert.buttons["Cancel"].click()
     }
 
@@ -562,12 +572,16 @@ final class BlackboxUITests: XCTestCase {
         let identifier = "flight.field.\(label.flightAccessibilityIdentifierComponent)"
         let field = app.textFields.matching(identifier: identifier).firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5), "Missing text field \(identifier)")
+        if !field.isHittable {
+            scrollEditor(untilHittable: field)
+        }
         return field
     }
 
     private func secureField(_ label: String) -> XCUIElement {
-        let field = app.secureTextFields[label].firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "Missing secure field \(label)")
+        let identifier = "reports.field.\(label.flightAccessibilityIdentifierComponent)"
+        let field = app.secureTextFields.matching(identifier: identifier).firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "Missing secure field \(identifier)")
         return field
     }
 
@@ -590,7 +604,7 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func openMapRoute(containing route: String) {
-        let menu = app.buttons["map.openFlight"]
+        let menu = app.descendants(matching: .any)["map.openFlight"]
         XCTAssertTrue(menu.waitForExistence(timeout: 5))
         menu.click()
         let routeItem = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", route)).firstMatch
@@ -600,10 +614,25 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func scrollEditor(untilHittable element: XCUIElement) {
-        for _ in 0..<8 where !element.isHittable {
+        let identifiedEditor = app.scrollViews["flight.editor.scroll"]
+        let editor: XCUIElement
+        if identifiedEditor.waitForExistence(timeout: 2) {
+            editor = identifiedEditor
+        } else {
             let scrollViews = app.scrollViews
-            guard scrollViews.count > 0 else { break }
-            scrollViews.element(boundBy: scrollViews.count - 1).swipeUp()
+            XCTAssertGreaterThan(scrollViews.count, 0, "Missing flight editor scroll container")
+            editor = scrollViews.element(boundBy: max(0, scrollViews.count - 1))
+        }
+        XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
+        XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
+        for _ in 0..<8 where !element.isHittable {
+            let targetFrame = element.frame
+            let editorFrame = editor.frame
+            if !targetFrame.isEmpty, targetFrame.midY < editorFrame.midY {
+                editor.swipeDown()
+            } else {
+                editor.swipeUp()
+            }
         }
         XCTAssertTrue(element.isHittable, "Could not reveal \(element.identifier) in the flight editor")
     }
@@ -620,8 +649,13 @@ final class BlackboxUITests: XCTestCase {
         maxSwipes: Int = 16
     ) {
         XCTAssertTrue(element.waitForExistence(timeout: 5), "Missing \(element.identifier) before scrolling")
-        let identifiedContainer = app.scrollViews[containerIdentifier]
-        let container = identifiedContainer.waitForExistence(timeout: 2) ? identifiedContainer : app.scrollViews.firstMatch
+        let screen = app.descendants(matching: .any)[containerIdentifier]
+        XCTAssertTrue(screen.waitForExistence(timeout: 3), "Missing screen container \(containerIdentifier)")
+        let scrollIdentifier = containerIdentifier.replacingOccurrences(of: ".screen", with: ".scroll")
+        let identifiedContainer = app.scrollViews[scrollIdentifier]
+        let container = identifiedContainer.waitForExistence(timeout: 1)
+            ? identifiedContainer
+            : detailScrollView(overlapping: element)
         XCTAssertTrue(container.waitForExistence(timeout: 3), "Missing scroll container \(containerIdentifier)")
 
         for _ in 0..<maxSwipes where !element.isHittable {
@@ -640,16 +674,42 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(element.isHittable, "Could not reveal \(element.identifier) in \(containerIdentifier)")
     }
 
+    private func detailScrollView(overlapping element: XCUIElement) -> XCUIElement {
+        let scrollViews = app.scrollViews
+        XCTAssertGreaterThan(scrollViews.count, 0, "Missing a detail scroll container")
+        let targetFrame = element.frame
+        var best: XCUIElement?
+        for index in 0..<scrollViews.count {
+            let candidate = scrollViews.element(boundBy: index)
+            let frame = candidate.frame
+            guard candidate.exists, !frame.isEmpty else { continue }
+            let horizontallyOverlaps = targetFrame.isEmpty
+                || (frame.minX <= targetFrame.midX && frame.maxX >= targetFrame.midX)
+            guard horizontallyOverlaps else { continue }
+            if best == nil || frame.minX > best!.frame.minX { best = candidate }
+        }
+        return best ?? scrollViews.element(boundBy: max(0, scrollViews.count - 1))
+    }
+
+    private func dialog(_ title: String) -> XCUIElement {
+        let alert = app.alerts[title]
+        if alert.waitForExistence(timeout: 1) { return alert }
+        let titlePredicate = NSPredicate(format: "label == %@ OR value == %@", title, title)
+        let sheet = app.sheets.containing(titlePredicate).firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 4), "Missing alert or sheet titled \(title)")
+        return sheet
+    }
+
     private func element(containing value: String, type: XCUIElement.ElementType) -> XCUIElement {
         app.descendants(matching: type)
-            .matching(NSPredicate(format: "label CONTAINS[c] %@", value))
+            .matching(NSPredicate(format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", value, value))
             .firstMatch
     }
 
     private func comparisonRefreshButton() -> XCUIElement {
-        let refreshButtons = app.buttons.matching(NSPredicate(format: "label == %@", "Refresh"))
-        XCTAssertGreaterThan(refreshButtons.count, 0)
-        return refreshButtons.element(boundBy: refreshButtons.count - 1)
+        let refresh = app.buttons["comparison.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 3), "Missing comparison refresh action")
+        return refresh
     }
 
     private func replaceComparisonSource(_ source: URL, with fixture: URL?) throws {

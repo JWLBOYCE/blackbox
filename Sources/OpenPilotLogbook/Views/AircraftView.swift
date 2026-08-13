@@ -52,6 +52,7 @@ struct AircraftView: View {
                 .frame(minWidth: 420, idealWidth: 500)
         }
         .navigationTitle("Aircraft")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("aircraft.screen")
         .onAppear {
             if selection == nil { selection = sortedAircraft.first?.id }

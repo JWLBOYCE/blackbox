@@ -4,6 +4,24 @@ import Testing
 
 @Suite("UI-test launch root safety")
 struct UITestLaunchConfigurationTests {
+    @Test("UI test windows are fitted inside the visible screen")
+    func testWindowFramesAreFittedAndCentered() {
+        let visible = NSRect(x: 0, y: 0, width: 1_024, height: 768)
+        let oversized = UITestLaunchConfiguration.fittedTestWindowFrame(
+            requestedFrame: NSRect(x: 0, y: 0, width: 1_440, height: 980),
+            visibleFrame: visible
+        )
+        #expect(oversized == NSRect(x: 12, y: 12, width: 1_000, height: 744))
+
+        let regular = UITestLaunchConfiguration.fittedTestWindowFrame(
+            requestedFrame: NSRect(x: 0, y: 0, width: 900, height: 700),
+            visibleFrame: visible
+        )
+        #expect(regular.size == NSSize(width: 900, height: 700))
+        #expect(regular.midX == visible.midX)
+        #expect(regular.midY == visible.midY)
+    }
+
     @Test("Canonical runner temporary direct child is accepted")
     func canonicalRunnerTemporaryDirectChildIsAccepted() throws {
         let syntheticHome = URL(fileURLWithPath: "/Users/Synthetic-Blackbox-Test", isDirectory: true)

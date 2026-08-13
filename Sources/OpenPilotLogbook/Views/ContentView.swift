@@ -46,23 +46,28 @@ struct ContentView: View {
             Text("Export exactly \(store.exportPreviewFlights.count) finalised active record\(store.exportPreviewFlights.count == 1 ? "" : "s") using the visible filters to \(store.pendingExportDestinationName). Drafts, superseded entries, and Trash are excluded. This is not regulatory certification.")
         }
         .transaction { transaction in if reduceMotion { transaction.animation = nil } }
-        .accessibilityIdentifier("blackbox.root")
     }
 
     private var sidebar: some View {
         List(selection: Binding(get: { store.selectedSection }, set: store.requestSection)) {
             Section {
                 ForEach(AppSection.allCases) { section in
-                    Label {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(section.rawValue)
-                            Text(section.subtitle)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                    Button {
+                        store.requestSection(section)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(section.rawValue)
+                                Text(section.subtitle)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: section.icon).frame(width: 18)
                         }
-                    } icon: {
-                        Image(systemName: section.icon).frame(width: 18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .buttonStyle(.plain)
                     .tag(section as AppSection?)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("\(section.rawValue), \(section.subtitle)")

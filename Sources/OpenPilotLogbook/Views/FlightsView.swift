@@ -274,7 +274,6 @@ struct FlightEditorView: View {
                     editorHeader(for: binding.wrappedValue)
                     ScrollView {
                                 VStack(alignment: .leading, spacing: 14) {
-                                    diagnostics
                                     FlightSection("Flight", systemImage: "airplane") {
                                         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
                                             GridRow {
@@ -341,6 +340,7 @@ struct FlightEditorView: View {
                                         }
                                         .disabled(binding.wrappedValue.recordState != .draft)
                                     }
+                                    diagnostics
                                     DisclosureGroup("Times and Landings", isExpanded: $showTimes) {
                                     FlightSection("Entered Times", systemImage: "clock") {
                                         Text("These values are preserved exactly as entered. Suggestions below are never applied automatically.")
@@ -384,7 +384,6 @@ struct FlightEditorView: View {
                                 }
                                 .disabled(binding.wrappedValue.recordState != .draft)
                             }
-                            .accessibilityIdentifier("flight.section.times")
                             }
                             DisclosureGroup("Crew", isExpanded: $showCrew) {
                                 FlightSection("Crew", systemImage: "person.2") {
@@ -392,7 +391,6 @@ struct FlightEditorView: View {
                                         .disabled(binding.wrappedValue.recordState != .draft)
                                 }
                             }
-                            .accessibilityIdentifier("flight.section.crew")
                             DisclosureGroup("Notes & Advanced", isExpanded: $showAdvanced) {
                             FlightSection("Notes & Signatures", systemImage: "text.bubble") {
                                 TextEditor(text: binding.remarks)
@@ -420,10 +418,10 @@ struct FlightEditorView: View {
                                         .accessibilityIdentifier("flight.finalise")
                                     }
                                 }
-                                .accessibilityIdentifier("flight.section.advanced")
                             }
                                 .padding(.bottom, 14)
                             }
+                            .accessibilityIdentifier("flight.editor.scroll")
                         }
                         .onChange(of: binding.wrappedValue) { _, _ in store.draftDidChange() }
                     if binding.wrappedValue.recordState == .finalised {
@@ -504,7 +502,6 @@ struct FlightEditorView: View {
                             .disabled(store.draftFlight?.recordState != .draft || !suggestion.isActionable)
                             .accessibilityIdentifier("suggestions.accept.\(suggestion.field.rawValue)")
                     }
-                    .accessibilityIdentifier("suggestions.item.\(suggestion.field.rawValue)")
                 }
             }
         }

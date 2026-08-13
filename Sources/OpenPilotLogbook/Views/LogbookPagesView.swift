@@ -63,6 +63,7 @@ struct LogbookPagesView: View {
             }
         }
         .navigationTitle("Logbook Pages")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pages.screen")
         .onAppear {
             if selectedPageID == nil { selectedPageID = pages.first?.id }

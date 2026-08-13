@@ -43,6 +43,7 @@ struct ComplianceView: View {
         }
         .padding(24)
         .navigationTitle("Logbook Checks")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("checks.screen")
     }
 }

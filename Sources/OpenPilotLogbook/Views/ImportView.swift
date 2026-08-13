@@ -25,6 +25,7 @@ struct ImportView: View {
                         Label("Import LogTen Pro", systemImage: "tray.and.arrow.down")
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityIdentifier("import.chooseLogTen")
 
                     Button {
                         showImporter = true
@@ -32,6 +33,7 @@ struct ImportView: View {
                         Label("Choose Files", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("import.chooseDocuments")
                 }
             }
 
@@ -85,7 +87,9 @@ struct ImportView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("import.scroll")
         .navigationTitle("Import")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("import.screen")
         .fileImporter(
             isPresented: $showImporter,
@@ -166,6 +170,7 @@ struct ImportView: View {
                 .buttonStyle(.link)
                 .accessibilityIdentifier("import.viewHistory")
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("import.preview")
     }
 
@@ -212,6 +217,7 @@ struct ImportView: View {
                                         .font(.caption)
                                     }
                                 }
+                                .accessibilityElement(children: .contain)
                                 .accessibilityIdentifier("import.addition.fields.\(sourcePK)")
                             }
                         } label: {
@@ -232,6 +238,7 @@ struct ImportView: View {
                                 }
                             }
                         }
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier(sourcePK.map { "import.addition.\($0)" } ?? "import.addition.unknown")
                     }
                 }
@@ -287,6 +294,7 @@ struct ImportView: View {
                         }
                         .padding(12)
                         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("import.change.\(change.sourcePK)")
                     }
                 }
@@ -378,6 +386,7 @@ struct ImportView: View {
             }
             .padding(.top, 8)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("import.unchanged")
     }
 
@@ -398,6 +407,7 @@ struct ImportView: View {
             }
             .padding(.top, 8)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("import.sourceOnlyOmissions")
     }
 

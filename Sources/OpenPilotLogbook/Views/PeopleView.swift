@@ -52,6 +52,7 @@ struct PeopleView: View {
                 .frame(minWidth: 420, idealWidth: 520)
         }
         .navigationTitle("People")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("people.screen")
         .onAppear {
             if selection == nil { selection = sortedPeople.first?.id }

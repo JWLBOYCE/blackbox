@@ -107,8 +107,29 @@ enum UITestLaunchConfiguration {
         else { return }
 
         DispatchQueue.main.async {
-            NSApp.windows.first?.setContentSize(NSSize(width: width, height: height))
+            guard let window = NSApp.windows.first,
+                  let screen = window.screen ?? NSScreen.main else { return }
+            let requestedContent = NSRect(origin: .zero, size: NSSize(width: width, height: height))
+            let requestedFrame = window.frameRect(forContentRect: requestedContent)
+            let appliedFrame = fittedTestWindowFrame(requestedFrame: requestedFrame, visibleFrame: screen.visibleFrame)
+            window.setFrame(appliedFrame, display: true)
         }
+    }
+
+    static func fittedTestWindowFrame(
+        requestedFrame: NSRect,
+        visibleFrame: NSRect,
+        margin: CGFloat = 12
+    ) -> NSRect {
+        let safeFrame = visibleFrame.insetBy(dx: margin, dy: margin)
+        let width = min(requestedFrame.width, safeFrame.width)
+        let height = min(requestedFrame.height, safeFrame.height)
+        return NSRect(
+            x: safeFrame.midX - width / 2,
+            y: safeFrame.midY - height / 2,
+            width: width,
+            height: height
+        )
     }
 
     /// Returns a production repository failure-injection boundary only for a

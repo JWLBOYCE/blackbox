@@ -18,22 +18,21 @@ struct OpenPilotLogbookApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Flight") { store.startNewFlight() }
                     .keyboardShortcut("n", modifiers: [.command])
+            }
+            CommandGroup(before: .saveItem) {
                 Button("Save Draft") { store.saveDraft() }
                     .keyboardShortcut("s", modifiers: [.command])
                     .disabled(!store.canSaveDraft)
-                Button("Finalise Entry") { store.requestFinalise() }
-                    .keyboardShortcut(.return, modifiers: [.command, .shift])
-                    .disabled(!store.canFinalise)
+            }
+            CommandGroup(after: .importExport) {
                 Button("Export CAA-format Report") { store.exportToRememberedFolder() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }
-            CommandGroup(after: .sidebar) {
-                Button("Search Flights") {
-                    store.requestSearchFocus()
-                }
-                .keyboardShortcut("f", modifiers: [.command])
-            }
             CommandMenu("Flights") {
+                Button("Finalise Entry") { store.requestFinalise() }
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                    .disabled(!store.canFinalise)
+                Divider()
                 Button("Copy Selected Flights") { store.copySelectedFlights() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                 Button("Paste Flights") { store.pasteFlights() }
@@ -41,6 +40,8 @@ struct OpenPilotLogbookApp: App {
                 Button("Duplicate Flight") { store.duplicateCurrentFlight() }
                     .keyboardShortcut("d", modifiers: [.command])
                 Divider()
+                Button("Search Flights") { store.requestSearchFocus() }
+                    .keyboardShortcut("f", modifiers: [.command])
                 Button("Show Logbook Pages") { store.requestSection(.pages) }
                     .keyboardShortcut("p", modifiers: [.command, .option])
             }

@@ -32,6 +32,7 @@ struct HistoryView: View {
                 .font(.callout)
                 .padding(10)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("history.context")
             }
             Group {
@@ -44,6 +45,7 @@ struct HistoryView: View {
         }
         .padding(24)
         .navigationTitle("History")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("history.screen")
         .onAppear {
             if let requested = store.requestedHistoryDestination { selection = requested }
@@ -133,6 +135,7 @@ struct HistoryView: View {
                 }
                 .padding(12)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("history.operation.\(operation.id)")
             }
         }

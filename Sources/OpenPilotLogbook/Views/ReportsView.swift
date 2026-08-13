@@ -33,11 +33,13 @@ struct ReportsView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("reports.scroll")
         .fileImporter(isPresented: $showRestoreImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
             guard case let .success(urls) = result, let url = urls.first else { return }
             store.restoreEncryptedBackup(url: url)
         }
         .navigationTitle("Reports")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("reports.screen")
     }
 
@@ -93,6 +95,7 @@ struct ReportsView: View {
                 SecureField("Backup passphrase", text: $store.backupPassphrase)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 420)
+                    .accessibilityIdentifier("reports.field.backup-passphrase")
                 HStack(spacing: 12) {
                     Button {
                         store.createEncryptedBackup()

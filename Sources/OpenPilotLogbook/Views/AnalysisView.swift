@@ -38,6 +38,7 @@ struct AnalysisView: View {
         }
         .padding(24)
         .navigationTitle("Analysis")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("analysis.screen")
     }
 
@@ -55,6 +56,7 @@ struct AnalysisView: View {
                     Button(group.name) { store.applyAnalysisGroup(group) }
                 }
             }
+            .accessibilityIdentifier("analysis.savedGroups")
         }
     }
 
@@ -89,6 +91,7 @@ struct AnalysisView: View {
         } label: {
             Label("Record states", systemImage: "line.3.horizontal.decrease.circle")
         }
+        .accessibilityIdentifier("analysis.recordStates")
     }
 
     private var saveGroupControls: some View {

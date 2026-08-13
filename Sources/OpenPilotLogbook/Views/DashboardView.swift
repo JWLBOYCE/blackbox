@@ -23,6 +23,7 @@ struct DashboardView: View {
         }
         .scrollContentBackground(.hidden)
         .navigationTitle("Dashboard")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.screen")
     }
 

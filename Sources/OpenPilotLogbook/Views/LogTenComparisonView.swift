@@ -33,6 +33,7 @@ struct LogTenComparisonView: View {
         }
         .scrollContentBackground(.hidden)
         .navigationTitle("Compare")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("comparison.screen")
         .onAppear {
             if case .idle = store.logTenComparisonState {
@@ -51,7 +52,9 @@ struct LogTenComparisonView: View {
             HStack {
                 Text("LogTen Comparison").pageTitleStyle()
                 Spacer()
-                Button("Refresh", action: store.refreshLogTenComparison).buttonStyle(.bordered)
+                Button("Refresh", action: store.refreshLogTenComparison)
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("comparison.refresh")
             }
             EmptyStateBlock(title: title, message: message, systemImage: systemImage)
                 .frame(minHeight: 360)
@@ -75,6 +78,7 @@ struct LogTenComparisonView: View {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
+            .accessibilityIdentifier("comparison.refresh")
         }
     }
 
