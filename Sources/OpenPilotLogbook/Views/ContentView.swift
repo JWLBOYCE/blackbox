@@ -64,6 +64,7 @@ struct ContentView: View {
                         Image(systemName: section.icon).frame(width: 18)
                     }
                     .tag(section as AppSection?)
+                    .accessibilityElement(children: .combine)
                     .accessibilityLabel("\(section.rawValue), \(section.subtitle)")
                     .accessibilityIdentifier("sidebar.\(section.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))")
                 }

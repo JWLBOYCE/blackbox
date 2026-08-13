@@ -313,7 +313,9 @@ struct FlightEditorView: View {
                                     }
                                     GridRow {
                                         TextField("Route", text: binding.route)
+                                            .accessibilityIdentifier("flight.field.route")
                                         TextField("Flight number", text: binding.flightNumber)
+                                            .accessibilityIdentifier("flight.field.flight-number")
                                     }
                                         }
                                         .disabled(binding.wrappedValue.recordState != .draft)

@@ -15,7 +15,7 @@ struct OpenPilotLogbookApp: App {
                 .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
         }
         .commands {
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .newItem) {
                 Button("New Flight") { store.startNewFlight() }
                     .keyboardShortcut("n", modifiers: [.command])
                 Button("Save Draft") { store.saveDraft() }

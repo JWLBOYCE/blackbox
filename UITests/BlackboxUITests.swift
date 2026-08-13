@@ -488,7 +488,9 @@ final class BlackboxUITests: XCTestCase {
             XCTAssertEqual(app.windows.firstMatch.frame.width, CGFloat(requestedWidth), accuracy: 8)
         }
 
+        let initialWindowCount = app.windows.count
         app.typeKey("n", modifierFlags: .command)
+        XCTAssertEqual(app.windows.count, initialWindowCount, "Command-N must create a flight in the current window, not open another window")
         replaceText(in: textField("Departure"), with: "EGLL")
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Draft saved"].waitForExistence(timeout: 5))
@@ -541,7 +543,7 @@ final class BlackboxUITests: XCTestCase {
 
     private func openSection(_ title: String, subtitle: String) {
         let identifier = "sidebar.\(title.lowercased().replacingOccurrences(of: " ", with: "-"))"
-        let identified = app.descendants(matching: .any)[identifier]
+        let identified = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
         if identified.waitForExistence(timeout: 2) {
             identified.click()
             return
@@ -557,8 +559,9 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func textField(_ label: String) -> XCUIElement {
-        let field = app.textFields[label].firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "Missing text field \(label)")
+        let identifier = "flight.field.\(label.flightAccessibilityIdentifierComponent)"
+        let field = app.textFields.matching(identifier: identifier).firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "Missing text field \(identifier)")
         return field
     }
 
@@ -686,5 +689,13 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey(.return, modifierFlags: [])
         Thread.sleep(forTimeInterval: 0.4)
         app.typeKey(.return, modifierFlags: [])
+    }
+}
+
+private extension String {
+    var flightAccessibilityIdentifierComponent: String {
+        lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 }
