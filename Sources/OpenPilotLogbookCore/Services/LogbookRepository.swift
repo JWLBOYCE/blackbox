@@ -2895,7 +2895,7 @@ public final class LogbookRepository {
                        COALESCE(f.ZFLIGHT_CUSTOMTIME4, 0) AS picus_day_minutes,
                        COALESCE(f.ZFLIGHT_P1USNIGHT, 0) AS picus_night_minutes,
                        COALESCE(f.ZFLIGHT_CUSTOMTIME3, 0) AS copilot_minutes,
-                       0 AS copilot_day_minutes,
+                       COALESCE(f.ZFLIGHT_CUSTOMTIME3, 0) AS copilot_day_minutes,
                        0 AS copilot_night_minutes,
                COALESCE(f.ZFLIGHT_DUALRECEIVED, 0) AS dual_minutes,
                COALESCE(f.ZFLIGHT_DUALGIVEN, 0) AS instructor_minutes,

@@ -223,4 +223,32 @@ struct UITestLaunchConfigurationTests {
         }
         #expect(message.localizedCaseInsensitiveContains("no flights"))
     }
+
+    @Test("Standard comparison fixture exactly matches its imported LogTen row")
+    func standardComparisonFixtureIsAnExactImportedMatch() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let paths = UITestLaunchConfiguration.pathsForCurrentLaunch(
+            arguments: ["Blackbox", "--ui-testing"],
+            environment: [
+                "BLACKBOX_DATA_ROOT": root.path,
+                "BLACKBOX_SYNTHETIC_FIXTURE": "deterministic"
+            ],
+            fileManager: fileManager
+        )
+
+        let repository = LogbookRepository(paths: paths)
+        guard case .loaded(let snapshot) = repository.logTenComparisonState() else {
+            Issue.record("The standard synthetic comparison fixture must load")
+            return
+        }
+        #expect(snapshot.importedRowsMatch)
+        #expect(snapshot.issues.isEmpty)
+        #expect(snapshot.logTen.copilotMinutes == 80)
+        #expect(snapshot.logTen.copilotDayMinutes == 80)
+        #expect(snapshot.blackboxImported.copilotDayMinutes == 80)
+    }
 }

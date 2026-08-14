@@ -57,6 +57,7 @@ Blackbox uses the same LogTen mappings as the original migration:
 | PICUS day | `ZFLIGHT_CUSTOMTIME4` | `picus_day_minutes` |
 | P1US night | `ZFLIGHT_P1USNIGHT` | `picus_night_minutes` |
 | Co-pilot | `ZFLIGHT_CUSTOMTIME3` | `copilot_minutes` |
+| Co-pilot day | derived from `ZFLIGHT_CUSTOMTIME3` | `copilot_day_minutes` |
 | Dual received | `ZFLIGHT_DUALRECEIVED` | `dual_minutes` |
 | Instructor / dual given | `ZFLIGHT_DUALGIVEN` | `instructor_minutes` |
 | Night | `ZFLIGHT_NIGHT` | `night_minutes` |
@@ -77,7 +78,11 @@ Blackbox uses the same LogTen mappings as the original migration:
 
 ## Day / Night Handling
 
-For imported LogTen rows, Blackbox preserves LogTen night values.
+For imported LogTen rows, Blackbox preserves LogTen night values. The mapped
+LogTen schema supplies a co-pilot total but no separate co-pilot-night field,
+so Blackbox initially assigns that total to co-pilot day and assigns zero to
+co-pilot night. Review and adjust that split before finalising if the source
+flight included co-pilot night time.
 
 For new Blackbox drafts, Blackbox can suggest night minutes from:
 

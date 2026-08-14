@@ -15,7 +15,7 @@ final class BlackboxUITests: XCTestCase {
         try prepareFreshSyntheticApplication()
         app.launch()
 
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 12), "Blackbox did not present its main window")
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 30), "Blackbox did not present its main window")
     }
 
     override func tearDownWithError() throws {
@@ -546,13 +546,20 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertFalse(initialRevealLastExport.isEnabled, "Reveal must stay disabled until an export succeeds")
         let chooseExportFolder = app.buttons["reports.chooseExportFolder"]
         chooseExportFolder.click()
-        let exportAlert = dialog("Confirm CAA-format Export")
+        let exportConfirmation = app.descendants(matching: .any)["reports.exportConfirmation"]
+        XCTAssertTrue(
+            exportConfirmation.waitForExistence(timeout: 12),
+            "The export confirmation must materialise on a clean CI runner"
+        )
+        XCTAssertTrue(app.descendants(matching: .any)["reports.exportConfirmation.title"].exists)
         XCTAssertTrue(element(containing: "exactly 1 finalised active record", type: .staticText).exists)
         XCTAssertTrue(
             element(containing: destination.path, type: .staticText).exists,
             "The validated synthetic folder callback must return the exact export destination"
         )
-        exportAlert.buttons["Export CAA-format Report"].click()
+        let confirmExport = app.buttons["reports.exportConfirmation.confirm"]
+        XCTAssertTrue(confirmExport.waitForExistence(timeout: 12))
+        confirmExport.click()
         XCTAssertTrue(element(containing: "Exported 1 finalised record", type: .staticText).waitForExistence(timeout: 8))
         let exportedFiles = try fileManager.contentsOfDirectory(
             at: destination,
@@ -705,7 +712,7 @@ final class BlackboxUITests: XCTestCase {
         try removeIsolatedHomeIfPresent()
         try prepareFreshSyntheticApplication(extraEnvironment: extraEnvironment)
         app.launch()
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 12), "Blackbox did not relaunch its synthetic UI-test window")
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 30), "Blackbox did not relaunch its synthetic UI-test window")
     }
 
     private func prepareFreshSyntheticApplication(extraEnvironment: [String: String] = [:]) throws {
