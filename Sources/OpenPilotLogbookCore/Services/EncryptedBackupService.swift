@@ -9,6 +9,16 @@ public enum EncryptedBackupService {
     private static let keyBytes = 32
     private static let pbkdf2Iterations: UInt32 = 600_000
     private static let maximumBackupBytes = 1_073_741_824
+    private static let aesGCMCombinedOverheadBytes = 28
+    private static var maximumPlaintextBytes: Int {
+        maximumBackupBytes
+            - envelopeMagic.count
+            - 1
+            - 1
+            - MemoryLayout<UInt32>.size
+            - saltBytes
+            - aesGCMCombinedOverheadBytes
+    }
 
     public static func createBackup(database: URL, destinationFolder: URL, passphrase: String) throws -> BackupResult {
         guard passphrase.count >= 12 else {
@@ -22,12 +32,19 @@ public enum EncryptedBackupService {
         let encryptedURL = destinationFolder.appendingPathComponent("Blackbox_Encrypted_Backup_\(stamp).blackboxbackup")
         let manifestURL = destinationFolder.appendingPathComponent("Blackbox_Encrypted_Backup_\(stamp).manifest.json")
         let sourceData = try selfContainedPayload(from: database)
+        guard sourceData.count <= maximumPlaintextBytes else {
+            throw backupError(code: 14, message: "The database is too large to create a restorable backup within the 1 GiB safety limit.")
+        }
         let salt = SymmetricKey(size: .bits128).withUnsafeBytes { Data($0) }
         let sealed = try AES.GCM.seal(sourceData, using: derivedKey(from: passphrase, salt: salt, iterations: pbkdf2Iterations))
         guard let combined = sealed.combined else {
             throw NSError(domain: "BlackboxBackup", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not create encrypted backup payload."])
         }
-        try envelope(salt: salt, iterations: pbkdf2Iterations, sealedPayload: combined).write(to: encryptedURL, options: [.atomic])
+        let encryptedEnvelope = envelope(salt: salt, iterations: pbkdf2Iterations, sealedPayload: combined)
+        guard encryptedEnvelope.count <= maximumBackupBytes else {
+            throw backupError(code: 14, message: "The encrypted backup exceeds the 1 GiB safety limit.")
+        }
+        try encryptedEnvelope.write(to: encryptedURL, options: [.atomic])
         let manifest = """
         {
           "application": "Blackbox",
@@ -162,6 +179,7 @@ public enum EncryptedBackupService {
     }
 
     private static func selfContainedPayload(from database: URL) throws -> Data {
+        try validateBackupSourceSize(database)
         let prefix = try Data(contentsOf: database, options: [.mappedIfSafe]).prefix(16)
         guard String(data: prefix, encoding: .utf8) == "SQLite format 3\0" else {
             return try Data(contentsOf: database)
@@ -176,7 +194,18 @@ public enum EncryptedBackupService {
         guard try verified.integrityCheck().lowercased() == "ok" else {
             throw NSError(domain: "BlackboxBackup", code: 5, userInfo: [NSLocalizedDescriptionKey: "The SQLite backup snapshot failed integrity verification."])
         }
+        try validateBackupSourceSize(snapshot)
         return try Data(contentsOf: snapshot)
+    }
+
+    private static func validateBackupSourceSize(_ file: URL) throws {
+        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true,
+              let fileSize = values.fileSize,
+              fileSize > 0,
+              fileSize <= maximumPlaintextBytes else {
+            throw backupError(code: 14, message: "The database is not a regular file that can fit in a restorable backup within the 1 GiB safety limit.")
+        }
     }
 
     private static func backupStamp() -> String {

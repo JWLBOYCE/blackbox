@@ -75,6 +75,16 @@ EXPECTED_MIN_SYSTEM="$(plist_value MinimumSystemVersion "$METADATA")"
 [[ "$(plist_value LSMinimumSystemVersion "$INFO_PLIST")" == "$EXPECTED_MIN_SYSTEM" ]] || fail "LSMinimumSystemVersion must be $EXPECTED_MIN_SYSTEM."
 [[ "$(plist_value CFBundlePackageType "$INFO_PLIST")" == "APPL" ]] || fail "CFBundlePackageType must be APPL."
 
+ICON_FILE="$(plist_value CFBundleIconFile "$INFO_PLIST")"
+[[ -n "$ICON_FILE" && "$ICON_FILE" != */* ]] || fail "CFBundleIconFile must name one bundled icon resource."
+[[ "$ICON_FILE" == *.icns ]] || ICON_FILE="$ICON_FILE.icns"
+ICON_PATH="$APP_PATH/Contents/Resources/$ICON_FILE"
+[[ -f "$ICON_PATH" && ! -L "$ICON_PATH" ]] || fail "Declared application icon is missing, not regular, or a symbolic link: $ICON_FILE"
+case "$(/usr/bin/file -b "$ICON_PATH")" in
+    *"Mac OS X icon"*) ;;
+    *) fail "Declared application icon is not an ICNS file: $ICON_FILE" ;;
+esac
+
 EXECUTABLE_NAME="$(plist_value CFBundleExecutable "$INFO_PLIST")"
 [[ -n "$EXECUTABLE_NAME" && "$EXECUTABLE_NAME" != */* ]] || fail "CFBundleExecutable is invalid."
 MAIN_EXECUTABLE="$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"

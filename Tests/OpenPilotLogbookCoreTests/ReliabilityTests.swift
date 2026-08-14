@@ -1005,6 +1005,29 @@ struct ReliabilityTests {
         #expect(FileManager.default.fileExists(atPath: second.encryptedBackup.path))
     }
 
+    @Test("Backup creation rejects oversized sources before loading them")
+    func backupCreationRejectsOversizedSources() throws {
+        let root = try tempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oversized = root.appendingPathComponent("Oversized.database")
+        #expect(FileManager.default.createFile(atPath: oversized.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: 1_073_741_825)
+        try handle.close()
+
+        do {
+            _ = try EncryptedBackupService.createBackup(
+                database: oversized,
+                destinationFolder: root.appendingPathComponent("Encrypted", isDirectory: true),
+                passphrase: "Synthetic-Oversized-Backup"
+            )
+            Issue.record("Oversized backup creation unexpectedly succeeded")
+        } catch let error as NSError {
+            #expect(error.domain == "BlackboxBackup")
+            #expect(error.code == 14)
+        }
+    }
+
     @Test("Import preview identifies unchanged rows and source-only omissions without removal")
     func importPreviewListsNonMutatingRows() throws {
         let (repository, root) = try makeRepository()
