@@ -7,27 +7,38 @@ struct ContentView: View {
     @Environment(\.blackboxReduceMotionOverride) private var testReduceMotion
 
     private var reduceMotion: Bool { systemReduceMotion || testReduceMotion }
-    private var exportRecordDescription: String {
-        let count = store.exportPreviewFlights.count
-        return "\(count) finalised active record\(count == 1 ? "" : "s")"
-    }
-
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            ZStack {
-                OpenPilotTheme.background.ignoresSafeArea()
-                detailView
+        ZStack {
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                ZStack {
+                    OpenPilotTheme.background.ignoresSafeArea()
+                    detailView
+                }
+                .frame(minWidth: 560)
             }
-            .frame(minWidth: 560)
+            .navigationSplitViewStyle(.balanced)
+            .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search flights")
+            .onSubmit(of: .search, store.applySearch)
+            .onChange(of: store.searchText) { _, value in if value.isEmpty { store.applySearch() } }
+            .toolbar { toolbar }
+            .safeAreaInset(edge: .bottom) { statusBar }
+            .disabled(store.showExportConfirmation)
+            .accessibilityHidden(store.showExportConfirmation)
+
+            if store.showExportConfirmation {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+                    .onTapGesture { }
+
+                ExportConfirmationOverlay(store: store)
+                    .padding(24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(1)
+            }
         }
-        .navigationSplitViewStyle(.balanced)
-        .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search flights")
-        .onSubmit(of: .search, store.applySearch)
-        .onChange(of: store.searchText) { _, value in if value.isEmpty { store.applySearch() } }
-        .toolbar { toolbar }
-        .safeAreaInset(edge: .bottom) { statusBar }
         .alert("Unsaved Draft", isPresented: $store.showDiscardConfirmation) {
             Button("Cancel", role: .cancel, action: store.cancelPendingSelection)
             Button("Save Draft", action: store.saveDraftAndContinue)
@@ -43,24 +54,7 @@ struct ContentView: View {
                 Text("Blackbox will preserve \(plan.flightCount) entries exactly, create \(plan.proposedBackupURL.lastPathComponent), migrate schema \(plan.currentSchemaVersion) to \(plan.targetSchemaVersion), and verify every legacy field and SQLite integrity before opening.")
             }
         }
-        .alert("Confirm CAA-format Export", isPresented: exportConfirmationPresentation) {
-            Button("Cancel", role: .cancel, action: store.cancelExport)
-            Button("Export CAA-format Report", action: store.confirmExport)
-        } message: {
-            Text("Export exactly \(exportRecordDescription) using the visible filters to \(store.pendingExportDestinationName). Drafts, superseded entries, and Trash are excluded. This export is not regulatory certification.")
-        }
         .transaction { transaction in if reduceMotion { transaction.animation = nil } }
-    }
-
-    private var exportConfirmationPresentation: Binding<Bool> {
-        Binding(
-            get: { store.showExportConfirmation },
-            set: { isPresented in
-                // A system dismissal is cancellation too: never retain a stale
-                // destination that a later export could accidentally reuse.
-                if !isPresented { store.cancelExport() }
-            }
-        )
     }
 
     private var sidebar: some View {
@@ -148,5 +142,77 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+}
+
+private struct ExportConfirmationOverlay: View {
+    @ObservedObject var store: LogbookStore
+
+    private var recordDescription: String {
+        let count = store.exportPreviewFlights.count
+        return "\(count) finalised active record\(count == 1 ? "" : "s")"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.title2)
+                    .foregroundStyle(OpenPilotTheme.blue)
+                    .accessibilityHidden(true)
+                Text("Confirm CAA-format Export")
+                    .font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("reports.exportConfirmation.title")
+            }
+
+            Text("Export exactly \(recordDescription) using the visible filters.")
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Destination")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(store.pendingExportDestinationName)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("reports.exportConfirmation.destination")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Drafts, superseded entries, and Trash are excluded.", systemImage: "line.3.horizontal.decrease.circle")
+                Label("This export is not regulatory certification.", systemImage: "info.circle")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel", role: .cancel, action: store.cancelExport)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("reports.exportConfirmation.cancel")
+                Button("Export CAA-format Report", action: store.confirmExport)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("reports.exportConfirmation.confirm")
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 500, idealWidth: 600, maxWidth: 680)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(.separator.opacity(0.45), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.3), radius: 24, y: 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reports.exportConfirmation")
     }
 }
