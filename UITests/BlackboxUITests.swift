@@ -532,7 +532,10 @@ final class BlackboxUITests: XCTestCase {
         // macOS 26 and cannot be addressed reliably by XCUI. Relaunch with the
         // fixed synthetic-root token so the same product callback proceeds to
         // the confirmation, export, history, and Reveal postconditions below.
-        try relaunch(extraEnvironment: ["BLACKBOX_UI_TEST_FOLDER_SELECTION": "exports"])
+        try relaunch(
+            extraEnvironment: [:],
+            extraLaunchArguments: ["--ui-testing-folder-selection=exports"]
+        )
         openSection("Reports", subtitle: "CSV and print")
         XCTAssertTrue(element(containing: "CAA-format export currently includes exactly 1 finalised active record", type: .staticText).waitForExistence(timeout: 5))
         let fileManager = FileManager.default
@@ -545,7 +548,12 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(initialRevealLastExport.waitForExistence(timeout: 5))
         XCTAssertFalse(initialRevealLastExport.isEnabled, "Reveal must stay disabled until an export succeeds")
         let chooseExportFolder = app.buttons["reports.chooseExportFolder"]
-        chooseExportFolder.click()
+        XCTAssertTrue(chooseExportFolder.waitForExistence(timeout: 5))
+        XCTAssertTrue(chooseExportFolder.isHittable)
+        // Xcode 26 hosted runners can synthesize a click on this secondary
+        // SwiftUI button without delivering its action. Exercise the same
+        // product flow through the documented application command instead.
+        app.typeKey("e", modifierFlags: [.command, .shift])
         let exportConfirmation = app.descendants(matching: .any)["reports.exportConfirmation"]
         XCTAssertTrue(
             exportConfirmation.waitForExistence(timeout: 12),
@@ -696,7 +704,10 @@ final class BlackboxUITests: XCTestCase {
         }
     }
 
-    private func relaunch(extraEnvironment: [String: String]) throws {
+    private func relaunch(
+        extraEnvironment: [String: String],
+        extraLaunchArguments: [String] = []
+    ) throws {
         if app.state != .notRunning {
             app.terminate()
             let didTerminate = app.wait(for: .notRunning, timeout: 5)
@@ -710,12 +721,18 @@ final class BlackboxUITests: XCTestCase {
             }
         }
         try removeIsolatedHomeIfPresent()
-        try prepareFreshSyntheticApplication(extraEnvironment: extraEnvironment)
+        try prepareFreshSyntheticApplication(
+            extraEnvironment: extraEnvironment,
+            extraLaunchArguments: extraLaunchArguments
+        )
         app.launch()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 30), "Blackbox did not relaunch its synthetic UI-test window")
     }
 
-    private func prepareFreshSyntheticApplication(extraEnvironment: [String: String] = [:]) throws {
+    private func prepareFreshSyntheticApplication(
+        extraEnvironment: [String: String] = [:],
+        extraLaunchArguments: [String] = []
+    ) throws {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
             .standardizedFileURL
@@ -732,7 +749,7 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertFalse(fileManager.fileExists(atPath: dataRoot.path))
 
         app = XCUIApplication()
-        app.launchArguments = ["--ui-testing"]
+        app.launchArguments = ["--ui-testing"] + extraLaunchArguments
         app.launchEnvironment["HOME"] = isolatedHome.path
         app.launchEnvironment["CFFIXED_USER_HOME"] = isolatedHome.path
         app.launchEnvironment["BLACKBOX_DATA_ROOT"] = dataRoot.path

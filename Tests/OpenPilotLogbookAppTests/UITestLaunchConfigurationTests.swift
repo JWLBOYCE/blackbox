@@ -45,6 +45,13 @@ struct UITestLaunchConfigurationTests {
         let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         #expect(selection == canonicalRoot.appendingPathComponent("Exports", isDirectory: true))
         #expect(selection?.deletingLastPathComponent() == canonicalRoot)
+
+        let argumentSelection = UITestLaunchConfiguration.syntheticFolderSelectionForCurrentLaunch(
+            arguments: ["Blackbox", "--ui-testing", "--ui-testing-folder-selection=exports"],
+            environment: baseEnvironment,
+            fileManager: fileManager
+        )
+        #expect(argumentSelection == selection)
     }
 
     @Test("UI test windows are fitted inside the visible screen")

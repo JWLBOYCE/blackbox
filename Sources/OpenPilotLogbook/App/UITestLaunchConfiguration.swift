@@ -26,6 +26,7 @@ enum UITestLaunchConfiguration {
     private static let restoreFailureKey = "BLACKBOX_UI_TEST_RESTORE_FAILURE_STAGE"
     private static let saveFailureKey = "BLACKBOX_UI_TEST_SAVE_FAILURE"
     private static let folderSelectionKey = "BLACKBOX_UI_TEST_FOLDER_SELECTION"
+    private static let folderSelectionArgumentPrefix = "--ui-testing-folder-selection="
     private static let rootKey = "BLACKBOX_DATA_ROOT"
     private static let snapshotKey = "OPENPILOT_SNAPSHOT_PATH"
     private static let markerName = ".blackbox-synthetic-ui-test-root"
@@ -46,7 +47,10 @@ enum UITestLaunchConfiguration {
         let rawScenario = environment[scenarioKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rawRestoreFailure = environment[restoreFailureKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rawSaveFailure = environment[saveFailureKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let rawFolderSelection = environment[folderSelectionKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawFolderSelection = syntheticFolderSelectionRequest(
+            arguments: arguments,
+            environment: environment
+        )
         let requestedScenario = rawScenario.isEmpty ? "standard" : rawScenario.lowercased()
 
         guard isUITest else {
@@ -199,7 +203,10 @@ enum UITestLaunchConfiguration {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> URL? {
-        let rawValue = environment[folderSelectionKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawValue = syntheticFolderSelectionRequest(
+            arguments: arguments,
+            environment: environment
+        )
         guard arguments.contains(argument) else {
             precondition(rawValue.isEmpty, "\(folderSelectionKey) is test-only and requires \(argument).")
             return nil
@@ -236,6 +243,26 @@ enum UITestLaunchConfiguration {
         } catch {
             preconditionFailure("Refusing unsafe synthetic folder selection: \(error)")
         }
+    }
+
+    private static func syntheticFolderSelectionRequest(
+        arguments: [String],
+        environment: [String: String]
+    ) -> String {
+        let environmentValue = environment[folderSelectionKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let argumentValues = arguments.compactMap { argument -> String? in
+            guard argument.hasPrefix(folderSelectionArgumentPrefix) else { return nil }
+            return String(argument.dropFirst(folderSelectionArgumentPrefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        precondition(argumentValues.count <= 1, "UI tests accept only one synthetic folder-selection argument.")
+        guard let argumentValue = argumentValues.first else { return environmentValue }
+        precondition(
+            environmentValue.isEmpty || environmentValue == argumentValue,
+            "Conflicting synthetic folder-selection requests."
+        )
+        return argumentValue
     }
 
     static func validatedRoot(_ rawRoot: String, fileManager: FileManager) throws -> URL {
