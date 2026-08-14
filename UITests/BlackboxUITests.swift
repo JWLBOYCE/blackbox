@@ -55,6 +55,10 @@ final class BlackboxUITests: XCTestCase {
         let initialWindowCount = app.windows.count
         app.typeKey("w", modifierFlags: .command)
         let closeAlert = dialog("Unsaved Draft")
+        XCTAssertTrue(closeAlert.buttons["Save Draft & Close"].exists)
+        XCTAssertTrue(closeAlert.buttons["Discard Changes & Close"].exists)
+        XCTAssertFalse(closeAlert.buttons["Save Draft & Quit"].exists)
+        XCTAssertFalse(closeAlert.buttons["Discard Changes & Quit"].exists)
         closeAlert.buttons["Cancel"].click()
         XCTAssertEqual(app.windows.count, initialWindowCount, "Cancelling Command-W must keep the primary window open")
         XCTAssertTrue(app.windows.firstMatch.exists, "Cancelling Command-W must preserve the primary window")
@@ -91,6 +95,10 @@ final class BlackboxUITests: XCTestCase {
         replaceText(in: textField("Departure"), with: "EGKK")
         app.typeKey("q", modifierFlags: .command)
         let failedQuitSaveAlert = dialog("Unsaved Draft")
+        XCTAssertTrue(failedQuitSaveAlert.buttons["Save Draft & Quit"].exists)
+        XCTAssertTrue(failedQuitSaveAlert.buttons["Discard Changes & Quit"].exists)
+        XCTAssertFalse(failedQuitSaveAlert.buttons["Save Draft & Close"].exists)
+        XCTAssertFalse(failedQuitSaveAlert.buttons["Discard Changes & Close"].exists)
         failedQuitSaveAlert.buttons["Save Draft & Quit"].click()
         XCTAssertNotEqual(app.state, .notRunning, "A failed Save Draft during Command-Q must cancel termination")
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 3), "A failed Save Draft during Command-Q must keep the primary window open")
@@ -116,6 +124,15 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(importedFlight.waitForExistence(timeout: 5))
         importedFlight.click()
 
+        // Verify immutable entered time while moving through the editor in its
+        // natural top-to-bottom order. Returning from the expanded Advanced
+        // section can evict this lazy grid row from the accessibility tree.
+        let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
+        scrollEditor(untilHittable: totalTimeQuery)
+        let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
+        XCTAssertTrue(visibleTotalTime.waitForExistence(timeout: 5))
+        XCTAssertFalse(visibleTotalTime.isEnabled, "Finalised entered times must remain immutable")
+
         let advancedSection = app.buttons["flight.section.advanced.toggle"]
         XCTAssertTrue(advancedSection.waitForExistence(timeout: 5))
         scrollEditor(untilHittable: advancedSection)
@@ -125,30 +142,22 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertEqual(signatureName.value as? String, "Not entered")
         XCTAssertFalse(app.textFields["flight.signature.name"].exists, "Finalised signature facts must not remain editable")
 
-        // The compact editor lazily removes rows that are far outside the
-        // viewport. Return towards the start, then reacquire the live query so
-        // this verifies immutability rather than off-screen virtualisation.
-        let editor = app.scrollViews["flight.editor.scroll"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 3))
-        for _ in 0..<12 {
-            if app.descendants(matching: .any)["flight.time.total"].exists { break }
-            editor.swipeDown(velocity: .slow)
-        }
-        let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
-        XCTAssertTrue(totalTimeQuery.waitForExistence(timeout: 3), "The entered-times section did not materialise while scrolling towards the start")
-        scrollEditor(untilHittable: totalTimeQuery)
-        let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
-        XCTAssertTrue(visibleTotalTime.waitForExistence(timeout: 5))
-        XCTAssertFalse(visibleTotalTime.isEnabled, "Finalised entered times must remain immutable")
-
         let amendment = app.buttons["Create Amendment"]
         XCTAssertTrue(amendment.waitForExistence(timeout: 5))
-        scrollEditor(untilHittable: amendment)
+        XCTAssertTrue(amendment.isHittable, "Create Amendment must remain in the fixed editor action bar")
         amendment.click()
         XCTAssertTrue(app.staticTexts["Created an amendment draft. The finalised original is unchanged."].waitForExistence(timeout: 5))
 
-        app.typeKey(.return, modifierFlags: [.command, .shift])
+        // The first finalisation above covers the keyboard shortcut. Use the
+        // amendment editor's stable action identifier here so this assertion
+        // tests amendment finalisation, not AppKit shortcut focus routing.
+        let amendmentFinalise = app.buttons["flight.finalise.primary"]
+        XCTAssertTrue(amendmentFinalise.waitForExistence(timeout: 5))
+        XCTAssertTrue(amendmentFinalise.isEnabled)
+        XCTAssertTrue(amendmentFinalise.isHittable)
+        amendmentFinalise.click()
         let alert = dialog("Finalise Entry?")
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
         alert.buttons["Finalise & Lock"].click()
         XCTAssertTrue(app.staticTexts["Amendment finalised; the original is preserved as superseded"].waitForExistence(timeout: 6))
         XCTAssertTrue(app.buttons["Create Amendment"].waitForExistence(timeout: 3))
@@ -217,8 +226,20 @@ final class BlackboxUITests: XCTestCase {
         acceptSelectedCoordinates.click()
         XCTAssertTrue(app.staticTexts["Accepted selected suggestions"].waitForExistence(timeout: 5))
 
+        // A later native text edit must be the first Command-Z target. The
+        // second Undo reaches the older Blackbox operation; Redo walks them in
+        // the opposite order. This exercises the hosted responder/window stack,
+        // not only the headless UndoManager tests.
+        let laterFlightNumber = textField("Flight number")
+        replaceText(in: laterFlightNumber, with: "UNDO-ORDER")
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertNotEqual(textField("Flight number").value as? String, "UNDO-ORDER")
         app.typeKey("z", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Undid accepted suggestions"].waitForExistence(timeout: 5))
+        app.typeKey("z", modifierFlags: [.command, .shift])
+        XCTAssertTrue(app.staticTexts["Redid accepted suggestions"].waitForExistence(timeout: 5))
+        app.typeKey("z", modifierFlags: [.command, .shift])
+        XCTAssertEqual(textField("Flight number").value as? String, "UNDO-ORDER")
 
         let suggestionFixture = element(containing: "BX-NIGHT", type: .staticText)
         XCTAssertTrue(suggestionFixture.waitForExistence(timeout: 5))
@@ -267,12 +288,12 @@ final class BlackboxUITests: XCTestCase {
         let totalField = app.checkBoxes[totalFieldIdentifier]
         XCTAssertTrue(totalField.waitForExistence(timeout: 3))
         scrollUntilHittable(totalField, in: "import.screen")
-        XCTAssertEqual(totalField.value as? String, "Included")
+        XCTAssertTrue(waitForCheckboxState(true, of: totalField, timeout: 3))
         totalField.click()
         let excludedTotalField = app.checkBoxes[totalFieldIdentifier]
-        XCTAssertTrue(waitForValue("Excluded", of: excludedTotalField, timeout: 3))
+        XCTAssertTrue(waitForCheckboxState(false, of: excludedTotalField, timeout: 3))
         excludedTotalField.click()
-        XCTAssertTrue(waitForValue("Included", of: app.checkBoxes[totalFieldIdentifier], timeout: 3))
+        XCTAssertTrue(waitForCheckboxState(true, of: app.checkBoxes[totalFieldIdentifier], timeout: 3))
 
         let applyImport = app.buttons["import.apply"]
         scrollUntilHittable(applyImport, in: "import.screen")
@@ -466,7 +487,7 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(element(containing: "From ", type: .staticText).waitForExistence(timeout: 5))
 
         openShownFlight.click()
-        let editableRoute = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", "EHAM → EDDF")).firstMatch
+        let editableRoute = mappedRouteMenuItem(containing: "EHAM → EDDF")
         XCTAssertTrue(editableRoute.waitForExistence(timeout: 5))
         editableRoute.click()
         XCTAssertTrue(flightsTable().waitForExistence(timeout: 6))
@@ -498,7 +519,8 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(element(containing: "CAA-format export currently includes exactly 1 finalised active record", type: .staticText).waitForExistence(timeout: 5))
         let destination = dataRoot.appendingPathComponent("Exports", isDirectory: true)
         app.buttons["Choose Export Folder"].click()
-        chooseInOpenPanel(destination)
+        let panelService = XCUIApplication(bundleIdentifier: "com.apple.appkit.xpc.openAndSavePanelService")
+        chooseInOpenPanel(destination, hostedBy: panelService)
         let exportAlert = dialog("Confirm CAA-format Export")
         XCTAssertTrue(element(containing: "exactly 1 finalised active record", type: .staticText).exists)
         exportAlert.buttons["Export CAA-format Report"].click()
@@ -701,10 +723,19 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 5))
         XCTAssertTrue(menu.isHittable, "The route menu must remain fully inside the visible map")
         menu.click()
-        let routeItem = app.menuItems.matching(NSPredicate(format: "label CONTAINS %@", route)).firstMatch
+        let routeItem = mappedRouteMenuItem(containing: route)
         XCTAssertTrue(routeItem.waitForExistence(timeout: 5), "Missing mapped route \(route)")
         routeItem.click()
         XCTAssertTrue(flightsTable().waitForExistence(timeout: 6))
+    }
+
+    private func mappedRouteMenuItem(containing route: String) -> XCUIElement {
+        app.menuItems.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND (title CONTAINS %@ OR label CONTAINS %@)",
+            "map.route.",
+            route,
+            route
+        )).firstMatch
     }
 
     private func scrollEditor(untilHittable element: XCUIElement) {
@@ -719,7 +750,7 @@ final class BlackboxUITests: XCTestCase {
         }
         XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
         XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
-        for _ in 0..<16 where !element.isHittable {
+        for _ in 0..<16 where !isSafelyVisible(element, in: editor) {
             let targetFrame = element.frame
             let editorFrame = editor.frame
             if !targetFrame.isEmpty, targetFrame.midY < editorFrame.midY {
@@ -728,7 +759,21 @@ final class BlackboxUITests: XCTestCase {
                 editor.swipeUp(velocity: .slow)
             }
         }
-        XCTAssertTrue(element.isHittable, "Could not reveal \(element.identifier) in the flight editor")
+        XCTAssertTrue(
+            isSafelyVisible(element, in: editor),
+            "Could not reveal \(element.identifier) inside the flight editor viewport"
+        )
+    }
+
+    private func isSafelyVisible(_ element: XCUIElement, in editor: XCUIElement) -> Bool {
+        guard element.exists, element.isHittable else { return false }
+        let targetFrame = element.frame
+        let visibleEditorFrame = editor.frame.insetBy(dx: 4, dy: 10)
+        guard !targetFrame.isEmpty, !visibleEditorFrame.isEmpty else { return false }
+        return targetFrame.minY >= visibleEditorFrame.minY &&
+            targetFrame.maxY <= visibleEditorFrame.maxY &&
+            targetFrame.midX >= visibleEditorFrame.minX &&
+            targetFrame.midX <= visibleEditorFrame.maxX
     }
 
     private enum ScrollGesture: Equatable {
@@ -844,12 +889,21 @@ final class BlackboxUITests: XCTestCase {
         return nil
     }
 
-    private func chooseInOpenPanel(_ url: URL) {
+    private func chooseInOpenPanel(_ url: URL, hostedBy panelApplication: XCUIApplication? = nil) {
+        let panelHost = panelApplication ?? app!
+        if let panelApplication {
+            XCTAssertTrue(
+                panelApplication.windows.firstMatch.waitForExistence(timeout: 8),
+                "The AppKit open/save panel service did not present a window"
+            )
+        }
+
         // File panels can briefly move between sheet, dialog, and window roles
-        // while AppKit attaches them. Address the application-level keyboard
-        // command instead of making that transient role a test precondition.
-        app.typeKey("g", modifierFlags: [.command, .shift])
-        let locationField = app.textFields["PathTextField"]
+        // while AppKit attaches them. The explicit NSOpenPanel used for folder
+        // selection is hosted by AppKit's panel service; SwiftUI file importers
+        // remain in the target application's accessibility hierarchy.
+        panelHost.typeKey("g", modifierFlags: [.command, .shift])
+        let locationField = panelHost.textFields["PathTextField"]
         XCTAssertTrue(locationField.waitForExistence(timeout: 8), "The open panel did not present Go to Folder")
         locationField.typeText(url.path)
         locationField.typeKey(.return, modifierFlags: [])
@@ -857,9 +911,9 @@ final class BlackboxUITests: XCTestCase {
         // Native open/save panels expose the primary action through the stable
         // AppKit accessibility identifier. Its visible title (Open, Choose, or
         // Export Here) is not necessarily exposed as XCUIElement.label. Query
-        // from the app because Go to Folder can rebuild the panel hierarchy;
+        // from the active host because Go to Folder can rebuild the panel hierarchy;
         // PathTextField may remain as a stale accessibility proxy afterwards.
-        let action = app.buttons.matching(identifier: "OKButton").firstMatch
+        let action = panelHost.buttons.matching(identifier: "OKButton").firstMatch
         guard action.waitForExistence(timeout: 8) else {
             XCTFail("The file panel did not expose its selection action")
             return
@@ -874,7 +928,7 @@ final class BlackboxUITests: XCTestCase {
             // Some hosted AppKit panel hierarchies expose the selected, enabled
             // default button with an infinite AX frame. Return invokes that
             // default action without relying on unusable geometry.
-            app.typeKey(.return, modifierFlags: [])
+            panelHost.typeKey(.return, modifierFlags: [])
         }
         // Each caller asserts the resulting import, restore preview, or export
         // confirmation. Do not wait on the generic first sheet here: a
@@ -890,13 +944,26 @@ final class BlackboxUITests: XCTestCase {
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    private func waitForValue(_ value: String, of element: XCUIElement, timeout: TimeInterval) -> Bool {
+    private func waitForCheckboxState(_ expectedState: Bool, of element: XCUIElement, timeout: TimeInterval) -> Bool {
         let predicate = NSPredicate { object, _ in
             guard let element = object as? XCUIElement else { return false }
-            return element.exists && element.value as? String == value
+            guard element.exists, let actualState = self.checkboxState(of: element) else { return false }
+            return actualState == expectedState
         }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func checkboxState(of element: XCUIElement) -> Bool? {
+        if let value = element.value as? NSNumber {
+            return value.boolValue
+        }
+        guard let value = element.value as? String else { return nil }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "on", "checked", "included": return true
+        case "0", "false", "off", "unchecked", "excluded": return false
+        default: return nil
+        }
     }
 
     private func waitForNonexistence(_ element: XCUIElement, timeout: TimeInterval) -> Bool {

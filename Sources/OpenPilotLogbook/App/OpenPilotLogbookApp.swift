@@ -16,6 +16,13 @@ struct OpenPilotLogbookApp: App {
                 .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
         }
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { UndoCommandRouter(store: store).undo() }
+                    .keyboardShortcut("z", modifiers: [.command])
+
+                Button("Redo") { UndoCommandRouter(store: store).redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Flight") { store.startNewFlight() }
                     .keyboardShortcut("n", modifiers: [.command])
@@ -47,6 +54,60 @@ struct OpenPilotLogbookApp: App {
                     .keyboardShortcut("p", modifiers: [.command, .option])
             }
         }
+    }
+}
+
+/// Preserves chronological Undo when AppKit exposes a responder-local text
+/// manager alongside Blackbox's durable window manager. Any responder-local
+/// action is newer than the latest
+/// registered Blackbox operation because older secondary stacks are cleared at
+/// that operation boundary. Redo therefore walks the durable operation first,
+/// then the later responder-local action.
+@MainActor
+struct UndoCommandRouter {
+    let store: LogbookStore
+    private let injectedActiveResponderUndoManager: (() -> UndoManager?)?
+
+    init(
+        store: LogbookStore,
+        activeResponderUndoManager: (() -> UndoManager?)? = nil
+    ) {
+        self.store = store
+        self.injectedActiveResponderUndoManager = activeResponderUndoManager
+    }
+
+    func undo() {
+        let activeManager = activeResponderUndoManager()
+        if let activeManager,
+           activeManager !== store.sessionUndoManager,
+           activeManager.canUndo {
+            activeManager.undo()
+            return
+        }
+        store.undoLastSessionAction()
+    }
+
+    func redo() {
+        if let activeManager = activeResponderUndoManager(),
+           activeManager !== store.sessionUndoManager,
+           activeManager.canUndo,
+           store.sessionUndoManager.canRedo {
+            // A new responder-local edit after a Blackbox Undo creates a new
+            // branch. Never resurrect the abandoned Blackbox Redo branch.
+            store.invalidateSessionRedoForNativeBranch()
+            return
+        }
+        if store.sessionUndoManager.canRedo {
+            store.redoLastSessionAction()
+            return
+        }
+        guard let activeManager = activeResponderUndoManager(), activeManager.canRedo else { return }
+        activeManager.redo()
+    }
+
+    private func activeResponderUndoManager() -> UndoManager? {
+        injectedActiveResponderUndoManager?()
+            ?? store.primaryWindowActiveResponderUndoManager()
     }
 }
 
@@ -107,6 +168,11 @@ private final class WindowCloseGuardNSView: NSView {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    enum UnsavedDraftAlertContext: Equatable {
+        case close
+        case quit
+    }
+
     private weak var store: LogbookStore?
     private weak var guardedWindow: NSWindow?
     // NSWindow does not retain its delegate. Keep SwiftUI's original delegate
@@ -131,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guardedWindow = window
         forwardedWindowDelegate = window.delegate
         window.delegate = self
-        store.attachWindowUndoManager(windowUndoManager)
+        store.attachWindowUndoManager(windowUndoManager, window: window)
     }
 
     override func responds(to selector: Selector!) -> Bool {
@@ -169,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard pendingWindowClose == nil else { return .terminateCancel }
         guard !isTerminationReplyPending else { return .terminateLater }
 
-        let alert = unsavedDraftTerminationAlert()
+        let alert = Self.unsavedDraftAlert(for: .quit)
         guard let window = sender.keyWindow ?? sender.mainWindow else {
             return Self.terminationReply(for: alert.runModal()) {
                 store.saveDraft()
@@ -199,7 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard pendingWindowClose == nil else { return false }
 
         pendingWindowClose = sender
-        unsavedDraftTerminationAlert().beginSheetModal(for: sender) { [weak self, weak store, weak sender] response in
+        Self.unsavedDraftAlert(for: .close).beginSheetModal(for: sender) { [weak self, weak store, weak sender] response in
             guard let self else { return }
             self.pendingWindowClose = nil
             guard let sender, let store else { return }
@@ -208,9 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case .alertFirstButtonReturn:
                 guard store.saveDraft() else { return }
             case .alertThirdButtonReturn:
-                // This changes session state only. No repository write occurs,
-                // and the process exits immediately after the approved close.
-                store.isDraftDirty = false
+                store.discardDraftForWindowClose()
             default:
                 return
             }
@@ -235,14 +299,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func unsavedDraftTerminationAlert() -> NSAlert {
+    static func unsavedDraftAlert(for context: UnsavedDraftAlertContext) -> NSAlert {
+        let action = context == .close ? "Close" : "Quit"
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Unsaved Draft"
         alert.informativeText = "This draft has changes that have not been saved. Blackbox will not write or discard them unless you choose an action."
-        alert.addButton(withTitle: "Save Draft & Quit")
+        alert.addButton(withTitle: "Save Draft & \(action)")
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Discard Changes & Quit")
+        alert.addButton(withTitle: "Discard Changes & \(action)")
         alert.buttons[0].keyEquivalent = "\r"
         alert.buttons[1].keyEquivalent = "\u{1b}"
         alert.buttons[2].hasDestructiveAction = true
@@ -329,6 +394,7 @@ final class LogbookStore: ObservableObject {
     private let folderAccessStore: FolderAccessStore
     private(set) var sessionUndoManager: UndoManager
     private let shouldAttachWindowUndoManager: Bool
+    private weak var sessionUndoWindow: NSWindow?
     private var draftContextID = UUID()
 
     var visibleRoutes: [MapRoute] {
@@ -369,9 +435,10 @@ final class LogbookStore: ObservableObject {
         self.platformServices = platformServices ?? MacPlatformServices()
         self.folderAccessStore = folderAccessStore ?? FolderAccessStore()
         self.shouldAttachWindowUndoManager = undoManager == nil
-        self.sessionUndoManager = undoManager ?? UndoManager()
-        self.sessionUndoManager.groupsByEvent = false
-        self.sessionUndoManager.levelsOfUndo = 100
+        let resolvedUndoManager = undoManager ?? UndoManager()
+        resolvedUndoManager.groupsByEvent = false
+        resolvedUndoManager.levelsOfUndo = 100
+        self.sessionUndoManager = resolvedUndoManager
         self.lastEntryKind = UserDefaults.standard.string(forKey: "OpenPilotLogbook.lastEntryKind") ?? "Flight"
         self.currencyLandingLimit = UserDefaults.standard.object(forKey: "Blackbox.currencyLandingLimit") as? Int ?? 3
         self.currencyLookbackDays = UserDefaults.standard.object(forKey: "Blackbox.currencyLookbackDays") as? Int ?? 90
@@ -805,6 +872,35 @@ final class LogbookStore: ObservableObject {
         updateDraftDiagnostics()
     }
 
+    /// Discards only the editor's in-memory changes before the primary window
+    /// closes. The last persisted value is restored verbatim; a never-saved new
+    /// or duplicated draft is removed from the session. This intentionally does
+    /// not call the repository.
+    func discardDraftForWindowClose() {
+        clearSessionUndoForContextChange()
+        draftContextID = UUID()
+        draftFlight = persistedDraft
+        selectedSuggestionIDs.removeAll()
+        pendingSelectionID = nil
+        pendingSection = nil
+        pendingStartNew = false
+        pendingSearchFocus = false
+        showDiscardConfirmation = false
+        showFinaliseConfirmation = false
+        showTrashConfirmation = false
+
+        if let persistedID = persistedDraft?.id {
+            selectedFlightID = persistedID
+            selectedRouteFlightIDs = [persistedID]
+        } else {
+            selectedFlightID = nil
+            selectedRouteFlightIDs = []
+        }
+
+        updateDraftDiagnostics()
+        isDraftDirty = false
+    }
+
     func observedDraftDidChange() {
         draftDidChange()
     }
@@ -1130,7 +1226,16 @@ final class LogbookStore: ObservableObject {
         updateSessionUndoCommands()
     }
 
-    func attachWindowUndoManager(_ undoManager: UndoManager?) {
+    func invalidateSessionRedoForNativeBranch() {
+        guard sessionUndoManager.canRedo,
+              !sessionUndoManager.isUndoing,
+              !sessionUndoManager.isRedoing else { return }
+        sessionUndoManager.removeAllActions()
+        updateSessionUndoCommands()
+    }
+
+    func attachWindowUndoManager(_ undoManager: UndoManager?, window: NSWindow? = nil) {
+        if let window { sessionUndoWindow = window }
         guard shouldAttachWindowUndoManager, let undoManager, undoManager !== sessionUndoManager else { return }
         sessionUndoManager.removeAllActions()
         sessionUndoManager = undoManager
@@ -1141,10 +1246,14 @@ final class LogbookStore: ObservableObject {
     private func clearSessionUndoForContextChange() {
         guard !sessionUndoManager.isUndoing, !sessionUndoManager.isRedoing else { return }
         sessionUndoManager.removeAllActions()
+        clearSecondaryResponderUndoManagers()
         updateSessionUndoCommands()
     }
 
     private func registerSessionUndo(actionName: String, action: @escaping (LogbookStore) -> Void) {
+        if !sessionUndoManager.isUndoing, !sessionUndoManager.isRedoing {
+            clearSecondaryResponderUndoManagers()
+        }
         let startsStandaloneGroup = !sessionUndoManager.isUndoing &&
             !sessionUndoManager.isRedoing &&
             sessionUndoManager.groupingLevel == 0
@@ -1155,6 +1264,44 @@ final class LogbookStore: ObservableObject {
         if !sessionUndoManager.isUndoing && !sessionUndoManager.isRedoing {
             updateSessionUndoCommands()
         }
+    }
+
+    /// Blackbox keeps one durable window manager. If AppKit exposes separate
+    /// responder-local text stacks, clear their older history when a Blackbox
+    /// operation becomes the newest Undo boundary. This includes unfocused
+    /// TextEditor instances as well as the shared field editor.
+    /// Subsequent typing is newer and receives first refusal in the router.
+    private func clearSecondaryResponderUndoManagers() {
+        guard shouldAttachWindowUndoManager, let window = sessionUndoWindow else { return }
+        var candidates = [
+            window.firstResponder?.undoManager,
+            window.fieldEditor(false, for: nil)?.undoManager
+        ]
+        if let contentView = window.contentView {
+            candidates.append(contentsOf: textUndoManagers(in: contentView).map(Optional.some))
+        }
+        var cleared = Set<ObjectIdentifier>()
+        for manager in candidates.compactMap({ $0 }) where manager !== sessionUndoManager {
+            guard cleared.insert(ObjectIdentifier(manager)).inserted else { continue }
+            manager.removeAllActions()
+        }
+    }
+
+    private func textUndoManagers(in view: NSView) -> [UndoManager] {
+        var managers: [UndoManager] = []
+        if let textView = view as? NSTextView, let undoManager = textView.undoManager {
+            managers.append(undoManager)
+        }
+        for subview in view.subviews {
+            managers.append(contentsOf: textUndoManagers(in: subview))
+        }
+        return managers
+    }
+
+    func primaryWindowActiveResponderUndoManager() -> UndoManager? {
+        guard let window = sessionUndoWindow else { return nil }
+        return window.firstResponder?.undoManager
+            ?? window.fieldEditor(false, for: nil)?.undoManager
     }
 
     private func updateSessionUndoCommands() {

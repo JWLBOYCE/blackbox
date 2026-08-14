@@ -67,6 +67,157 @@ struct SessionUndoManagerTests {
         #expect(fixture.store.canUndoSessionAction)
     }
 
+    @Test("A newer native text edit is undone before an older session action")
+    func commandRoutingPreservesNewerNativeUndo() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanUp() }
+
+        fixture.store.startNewFlight()
+        fixture.store.draftFlight?.departure = "EGLL"
+        fixture.store.draftDidChange()
+        let suggestion = try #require(
+            fixture.store.flightSuggestions.first { $0.field == .departureCoordinates }
+        )
+        fixture.store.acceptSuggestion(suggestion)
+
+        let nativeManager = UndoManager()
+        nativeManager.groupsByEvent = false
+        let router = UndoCommandRouter(
+            store: fixture.store,
+            activeResponderUndoManager: { nativeManager }
+        )
+        let probe = NativeUndoProbe()
+        nativeManager.beginUndoGrouping()
+        nativeManager.registerUndo(withTarget: probe) { target in
+            target.undoCount += 1
+        }
+        nativeManager.setActionName("Native Text Edit")
+        nativeManager.endUndoGrouping()
+
+        router.undo()
+        #expect(probe.undoCount == 1)
+        #expect(fixture.store.draftFlight?.departureLatitude != nil)
+
+        router.undo()
+        #expect(fixture.store.statusMessage == "Undid Departure coordinates suggestion")
+        #expect(fixture.store.draftFlight?.departureLatitude == nil)
+    }
+
+    @Test("Redo restores an older session action before the later native edit")
+    func commandRoutingPreservesChronologicalRedo() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanUp() }
+
+        fixture.store.startNewFlight()
+        fixture.store.draftFlight?.departure = "EGLL"
+        fixture.store.draftDidChange()
+        let suggestion = try #require(
+            fixture.store.flightSuggestions.first { $0.field == .departureCoordinates }
+        )
+        let nativeManager = UndoManager()
+        nativeManager.groupsByEvent = false
+        let probe = NativeUndoProbe()
+        fixture.store.acceptSuggestion(suggestion)
+        nativeManager.beginUndoGrouping()
+        nativeManager.registerUndo(withTarget: probe) { target in
+            target.undoCount += 1
+            nativeManager.registerUndo(withTarget: target) { redoTarget in
+                redoTarget.redoCount += 1
+            }
+        }
+        nativeManager.setActionName("Native Text Edit")
+        nativeManager.endUndoGrouping()
+        let router = UndoCommandRouter(
+            store: fixture.store,
+            activeResponderUndoManager: { nativeManager }
+        )
+        nativeManager.undo()
+        fixture.store.undoLastSessionAction()
+        #expect(nativeManager.canRedo)
+        #expect(fixture.store.canRedoSessionAction)
+
+        router.redo()
+        #expect(fixture.store.statusMessage == "Redid Departure coordinates suggestion")
+        #expect(probe.redoCount == 0)
+
+        router.redo()
+        #expect(probe.redoCount == 1)
+    }
+
+    @Test("A new native branch invalidates an abandoned session Redo")
+    func newNativeBranchInvalidatesSessionRedo() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanUp() }
+
+        fixture.store.startNewFlight()
+        fixture.store.draftFlight?.departure = "EGLL"
+        fixture.store.draftDidChange()
+        let suggestion = try #require(
+            fixture.store.flightSuggestions.first { $0.field == .departureCoordinates }
+        )
+        fixture.store.acceptSuggestion(suggestion)
+        fixture.store.undoLastSessionAction()
+        #expect(fixture.store.canRedoSessionAction)
+
+        let nativeManager = UndoManager()
+        nativeManager.groupsByEvent = false
+        let probe = NativeUndoProbe()
+        nativeManager.beginUndoGrouping()
+        nativeManager.registerUndo(withTarget: probe) { target in
+            target.undoCount += 1
+        }
+        nativeManager.endUndoGrouping()
+        let router = UndoCommandRouter(
+            store: fixture.store,
+            activeResponderUndoManager: { nativeManager }
+        )
+
+        router.redo()
+
+        #expect(fixture.store.draftFlight?.departureLatitude == nil)
+        #expect(!fixture.store.canRedoSessionAction)
+        #expect(probe.undoCount == 0)
+    }
+
+    @Test("A Blackbox operation clears stale Undo from an unfocused text editor")
+    func operationClearsUnfocusedTextEditorUndo() throws {
+        let fixture = try makeStore(injectUndoManager: false)
+        defer { fixture.cleanUp() }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let container = NSView(frame: window.contentView?.bounds ?? .zero)
+        let unfocusedTextView = IsolatedUndoTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        container.addSubview(unfocusedTextView)
+        window.contentView = container
+        let delegate = AppDelegate()
+        delegate.bind(window: window, store: fixture.store)
+
+        let staleProbe = NativeUndoProbe()
+        let staleManager = unfocusedTextView.isolatedUndoManager
+        staleManager.beginUndoGrouping()
+        staleManager.registerUndo(withTarget: staleProbe) { target in
+            target.undoCount += 1
+        }
+        staleManager.endUndoGrouping()
+        #expect(staleManager.canUndo)
+
+        fixture.store.startNewFlight()
+        fixture.store.draftFlight?.departure = "EGLL"
+        fixture.store.draftDidChange()
+        let suggestion = try #require(
+            fixture.store.flightSuggestions.first { $0.field == .departureCoordinates }
+        )
+        fixture.store.acceptSuggestion(suggestion)
+
+        #expect(!staleManager.canUndo)
+        #expect(fixture.store.canUndoSessionAction)
+    }
+
     @Test("Suggestion Undo cannot alter a different draft")
     func suggestionUndoIsScopedToOriginalDraft() throws {
         let fixture = try makeStore()
@@ -226,4 +377,21 @@ private struct StoreFixture {
 
 private enum FixtureError: Error {
     case couldNotCreateDefaults
+}
+
+@MainActor
+private final class NativeUndoProbe: NSObject {
+    var undoCount = 0
+    var redoCount = 0
+}
+
+@MainActor
+private final class IsolatedUndoTextView: NSTextView {
+    let isolatedUndoManager: UndoManager = {
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+        return manager
+    }()
+
+    override var undoManager: UndoManager? { isolatedUndoManager }
 }
