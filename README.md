@@ -19,7 +19,9 @@
   <a href="#inside-the-cockpit">Screenshots</a> ·
   <a href="#capabilities">Capabilities</a> ·
   <a href="#get-started">Get started</a> ·
-  <a href="docs/LOGTEN_IMPORT.md">LogTen import guide</a>
+  <a href="docs/LOGTEN_IMPORT.md">LogTen import guide</a> ·
+  <a href="PRIVACY.md">Privacy</a> ·
+  <a href="docs/SUPPORT.md">Support</a>
 </p>
 
 ## Why Blackbox
@@ -108,11 +110,15 @@ swift run OpenPilotLogbookCoreSmokeTests
 
 The snapshot checker renders 72 synthetic screenshots across the principal screens, appearances, and widths. Pull requests pin full Xcode for hosted macOS UI workflows, run the privacy gates, and produce an unsigned Universal 2 archive only after verification. Signing and notarisation use local Keychain credentials that never enter CI.
 
+Mac App Store work uses a separate sandboxed configuration so it cannot silently weaken or replace the direct-distribution release. See the [App Store release runbook](docs/APP_STORE_RELEASE.md) and the [listing copy deck](docs/APP_STORE_LISTING.md).
+
 ## Privacy promise
 
 Never commit a real logbook, roster, database, PDF, spreadsheet, export, backup, or screenshot containing personal flight information. The repository blocks common private formats including `*.sqlite`, `*.db`, `*.sql`, `*.blackboxbackup`, PDFs, spreadsheets, and generated app output.
 
 If you discover a security or privacy issue, please follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
+
+The route globe uses NASA Visible Earth imagery and public-domain OurAirports data. See [third-party notices](THIRD_PARTY_NOTICES.md) for sources, terms, and important limitations.
 
 ## Contributing
 

@@ -12,7 +12,7 @@ enum UITestLaunchConfiguration {
         arguments: [String] = ProcessInfo.processInfo.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-#if DEBUG
+#if DEBUG || APP_STORE
         return false
 #else
         return !arguments.contains("--ui-testing") &&
