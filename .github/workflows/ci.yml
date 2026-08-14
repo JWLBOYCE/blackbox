@@ -444,15 +444,10 @@ jobs:
           REF_NAME: ${{ github.ref }}
         run: |
           eligible=no
-          if test "$REPOSITORY" = 'JWLBOYCE/blackbox'; then
-            if test "$EVENT_NAME" = push && test "$REF_NAME" = 'refs/heads/main'; then
-              eligible=yes
-            elif test "$EVENT_NAME" = pull_request \
-              && test "$BLACKBOX_PR_HEAD_REPOSITORY" = 'JWLBOYCE/blackbox' \
-              && test "$BLACKBOX_PR_HEAD_REF" = 'codex/blackbox-release-completion' \
-              && test "$BLACKBOX_PR_BASE_REF" = main; then
-              eligible=yes
-            fi
+          if test "$REPOSITORY" = 'JWLBOYCE/blackbox' \
+            && test "$EVENT_NAME" = push \
+            && test "$REF_NAME" = 'refs/heads/main'; then
+            eligible=yes
           fi
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
 

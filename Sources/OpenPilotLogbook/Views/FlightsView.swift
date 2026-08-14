@@ -243,6 +243,165 @@ struct FlightRow: View {
     }
 }
 
+/// `NSDatePicker` displays and edits local wall-clock components on macOS even
+/// when a SwiftUI ancestor supplies a UTC time-zone environment. These helpers
+/// deliberately bridge between the picker's local wall clock and the UTC
+/// instant stored by the logbook, so 09:05 entered in July is always 09:05Z.
+enum ZuluDateEditing {
+    enum Component {
+        case date
+        case time
+    }
+
+    static let utcTimeZone = TimeZone(secondsFromGMT: 0)!
+
+    static var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = utcTimeZone
+        return calendar
+    }
+
+    static func displayValue(
+        for storedUTCValue: Date,
+        in displayTimeZone: TimeZone = .autoupdatingCurrent
+    ) -> Date {
+        let components = utcCalendar.dateComponents(
+            [.era, .year, .month, .day, .hour, .minute, .second, .nanosecond],
+            from: storedUTCValue
+        )
+        var displayCalendar = Calendar(identifier: .gregorian)
+        displayCalendar.timeZone = displayTimeZone
+        var displayComponents = components
+        displayComponents.calendar = displayCalendar
+        displayComponents.timeZone = displayTimeZone
+        return displayCalendar.date(from: displayComponents) ?? storedUTCValue
+    }
+
+    static func storedValue(
+        from displayValue: Date,
+        preserving storedUTCValue: Date,
+        component: Component,
+        in displayTimeZone: TimeZone = .autoupdatingCurrent
+    ) -> Date {
+        var displayCalendar = Calendar(identifier: .gregorian)
+        displayCalendar.timeZone = displayTimeZone
+        let displayed = displayCalendar.dateComponents(
+            [.era, .year, .month, .day, .hour, .minute],
+            from: displayValue
+        )
+        var stored = utcCalendar.dateComponents(
+            [.era, .year, .month, .day, .hour, .minute, .second, .nanosecond],
+            from: storedUTCValue
+        )
+
+        switch component {
+        case .date:
+            stored.era = displayed.era
+            stored.year = displayed.year
+            stored.month = displayed.month
+            stored.day = displayed.day
+        case .time:
+            stored.hour = displayed.hour
+            stored.minute = displayed.minute
+            stored.second = 0
+            stored.nanosecond = 0
+        }
+
+        stored.calendar = utcCalendar
+        stored.timeZone = utcTimeZone
+        return utcCalendar.date(from: stored) ?? storedUTCValue
+    }
+}
+
+/// A deliberately narrow AppKit bridge. SwiftUI remains the source of truth;
+/// AppKit supplies the familiar segmented macOS date/time editor and stepper.
+struct ZuluDatePicker: NSViewRepresentable {
+    @Binding var selection: Date
+    var component: ZuluDateEditing.Component
+    var label: String
+    var accessibilityIdentifier: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSDatePicker {
+        let picker = NSDatePicker()
+        configure(picker)
+        picker.target = context.coordinator
+        picker.action = #selector(Coordinator.valueChanged(_:))
+        picker.dateValue = pickerValue(for: selection)
+        return picker
+    }
+
+    func updateNSView(_ picker: NSDatePicker, context: Context) {
+        context.coordinator.parent = self
+        configure(picker)
+        let updatedValue = pickerValue(for: selection)
+        if abs(picker.dateValue.timeIntervalSince(updatedValue)) >= 0.5 {
+            picker.dateValue = updatedValue
+        }
+    }
+
+    private func configure(_ picker: NSDatePicker) {
+        let displayTimeZone = TimeZone.autoupdatingCurrent
+        var displayCalendar = Calendar(identifier: .gregorian)
+        displayCalendar.timeZone = displayTimeZone
+        picker.calendar = displayCalendar
+        picker.timeZone = displayTimeZone
+        picker.locale = Locale(identifier: "en_GB")
+        picker.datePickerStyle = .textFieldAndStepper
+        picker.datePickerElements = component == .date ? [.yearMonthDay] : [.hourMinute]
+        picker.controlSize = .regular
+        picker.setAccessibilityIdentifier(accessibilityIdentifier)
+        picker.setAccessibilityLabel(label)
+        picker.setAccessibilityHelp("Entered and stored in UTC (Zulu)")
+    }
+
+    private func pickerValue(for storedValue: Date) -> Date {
+        ZuluDateEditing.displayValue(for: storedValue)
+    }
+
+    final class Coordinator: NSObject {
+        var parent: ZuluDatePicker
+
+        init(parent: ZuluDatePicker) {
+            self.parent = parent
+        }
+
+        @objc func valueChanged(_ sender: NSDatePicker) {
+            let updated = ZuluDateEditing.storedValue(
+                from: sender.dateValue,
+                preserving: parent.selection,
+                component: parent.component
+            )
+            if updated != parent.selection {
+                parent.selection = updated
+            }
+            sender.dateValue = ZuluDateEditing.displayValue(for: updated)
+        }
+    }
+}
+
+private struct LabeledZuluDatePicker: View {
+    @Binding var selection: Date
+    var component: ZuluDateEditing.Component
+    var label: String
+    var accessibilityIdentifier: String
+
+    var body: some View {
+        LabeledContent(label) {
+            ZuluDatePicker(
+                selection: $selection,
+                component: component,
+                label: label,
+                accessibilityIdentifier: accessibilityIdentifier
+            )
+            .frame(width: component == .date ? 132 : 92, height: 22)
+        }
+    }
+}
+
 private struct ArrivalZuluField: View {
     var flight: FlightEntry
 
@@ -285,6 +444,7 @@ struct FlightEditorView: View {
                                                     .labelsHidden()
                                                     .pickerStyle(.segmented)
                                                     .frame(width: 210)
+                                                    .accessibilityIdentifier("flight.field.entry-kind")
                                                     .onChange(of: binding.wrappedValue.entryKind) { _, newValue in
                                                         store.setDraftEntryKind(newValue)
                                                     }
@@ -292,8 +452,18 @@ struct FlightEditorView: View {
                                                 .gridCellColumns(2)
                                             }
                                             GridRow {
-                                                DatePicker("Date", selection: binding.date, displayedComponents: [.date])
-                                                DatePicker("Departure (Zulu)", selection: binding.date, displayedComponents: [.hourAndMinute])
+                                                LabeledZuluDatePicker(
+                                                    selection: binding.date,
+                                                    component: .date,
+                                                    label: "Date",
+                                                    accessibilityIdentifier: "flight.field.date-zulu"
+                                                )
+                                                LabeledZuluDatePicker(
+                                                    selection: binding.date,
+                                                    component: .time,
+                                                    label: "Departure (Zulu)",
+                                                    accessibilityIdentifier: "flight.field.departure-zulu"
+                                                )
                                     }
                                     GridRow {
                                         ArrivalZuluField(flight: binding.wrappedValue)
@@ -304,6 +474,7 @@ struct FlightEditorView: View {
                                             Text("Single pilot").tag("SP")
                                             Text("Multi-pilot").tag("MP")
                                         }
+                                        .accessibilityIdentifier("flight.field.operation")
                                         EmptyView()
                                     }
                                     GridRow {
@@ -335,6 +506,7 @@ struct FlightEditorView: View {
                                                     Text("Instructor").tag("Instructor")
                                                     Text("FSTD").tag("FSTD")
                                                 }
+                                                .accessibilityIdentifier("flight.field.pilot-function")
                                                 EmptyView()
                                             }
                                         }
@@ -366,6 +538,7 @@ struct FlightEditorView: View {
                                             Toggle("Pilot Flying", isOn: binding.pilotFlying)
                                                 .toggleStyle(.checkbox)
                                                 .fieldShell()
+                                                .accessibilityIdentifier("flight.field.pilot-flying")
                                             NumericStepper(title: "Takeoffs", value: binding.totalTakeoffs, range: 0...999)
                                             NumericStepper(title: "Day Takeoffs", value: binding.dayTakeoffs, range: 0...999)
                                             NumericStepper(title: "Night Takeoffs", value: binding.nightTakeoffs, range: 0...999)
@@ -378,7 +551,8 @@ struct FlightEditorView: View {
                                                 Spacer()
                                                 TextField("NM", value: binding.distanceNM, format: .number.precision(.fractionLength(0...1)))
                                                     .multilineTextAlignment(.trailing)
-                                            .frame(width: 86)
+                                                    .frame(width: 86)
+                                                    .accessibilityIdentifier("flight.field.distance-nm")
                                     }
                                     .fieldShell()
                                 }
@@ -414,6 +588,7 @@ struct FlightEditorView: View {
                                     .font(.callout)
                                     .scrollContentBackground(.hidden)
                                     .frame(minHeight: 90)
+                                    .accessibilityIdentifier("flight.field.remarks")
                                     .padding(8)
                                             .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 6))
                                             .overlay {
@@ -823,6 +998,38 @@ private extension String {
     }
 }
 
+enum CrewRoleSlot {
+    case captain
+    case firstOfficer
+    case other
+}
+
+enum CrewRoleCatalog {
+    static let menuOptions = [
+        "Captain", "Training Captain", "PICUS", "First Officer", "Instructor",
+        "Examiner", "Relief", "Cabin crew", "Observer", "Other crew"
+    ]
+
+    static func slot(for role: String?) -> CrewRoleSlot {
+        switch role {
+        case "Captain", "PIC", "Training Captain": .captain
+        case "First Officer", "Co-pilot", "PICUS": .firstOfficer
+        default: .other
+        }
+    }
+
+    static func role(_ existingRole: String?, whenAssignedTo slot: CrewRoleSlot) -> String {
+        if let existingRole, self.slot(for: existingRole) == slot {
+            return existingRole
+        }
+        switch slot {
+        case .captain: return "Captain"
+        case .firstOfficer: return "First Officer"
+        case .other: return "Other crew"
+        }
+    }
+}
+
 private struct CrewNamesField: View {
     @Binding var text: String
     @Binding var roles: String
@@ -838,13 +1045,13 @@ private struct CrewNamesField: View {
 
     private var captainName: String {
         names
-            .filter { roleMap[$0] == "Captain" || roleMap[$0] == "PIC" }
+            .filter { CrewRoleCatalog.slot(for: roleMap[$0]) == .captain }
             .joined(separator: " | ")
     }
 
     private var firstOfficerName: String {
         names
-            .filter { roleMap[$0] == "First Officer" || roleMap[$0] == "Co-pilot" }
+            .filter { CrewRoleCatalog.slot(for: roleMap[$0]) == .firstOfficer }
             .joined(separator: " | ")
     }
 
@@ -927,9 +1134,15 @@ private struct CrewNamesField: View {
             if !result.contains(name) { result.append(name) }
         }
         var updatedRoles = roleMap
-        for name in captainNames { updatedRoles[name] = "Captain" }
-        for name in firstOfficerNames { updatedRoles[name] = "First Officer" }
-        for name in otherNames { updatedRoles[name] = "Other crew" }
+        for name in captainNames {
+            updatedRoles[name] = CrewRoleCatalog.role(updatedRoles[name], whenAssignedTo: .captain)
+        }
+        for name in firstOfficerNames {
+            updatedRoles[name] = CrewRoleCatalog.role(updatedRoles[name], whenAssignedTo: .firstOfficer)
+        }
+        for name in otherNames {
+            updatedRoles[name] = CrewRoleCatalog.role(updatedRoles[name], whenAssignedTo: .other)
+        }
         text = combined.joined(separator: " | ")
         roles = FlightEntry.crewRolesText(from: updatedRoles, names: combined)
     }
@@ -978,12 +1191,13 @@ private struct CrewRolePill: View {
     var role: String
     var onChange: (String) -> Void
 
-    private let roles = ["Captain", "First Officer", "Instructor", "Examiner", "Relief", "Cabin crew", "Observer", "Other crew"]
-
     var body: some View {
         Menu {
-            ForEach(roles, id: \.self) { option in
+            ForEach(CrewRoleCatalog.menuOptions, id: \.self) { option in
                 Button(option) { onChange(option) }
+                    .accessibilityIdentifier(
+                        "flight.crew.role.\(name.flightAccessibilityIdentifierComponent).option.\(option.flightAccessibilityIdentifierComponent)"
+                    )
             }
         } label: {
             HStack(spacing: 6) {
@@ -1003,6 +1217,7 @@ private struct CrewRolePill: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(name), \(role)")
         .accessibilityHint("Choose crew role")
+        .accessibilityIdentifier("flight.crew.role.\(name.flightAccessibilityIdentifierComponent)")
     }
 }
 

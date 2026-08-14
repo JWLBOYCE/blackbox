@@ -11,6 +11,7 @@ The release operator supplies these outside the repository:
 - A clean Git checkout at the exact source commit used to build the app.
 - The CI-produced `.xcarchive.zip`, XML manifest plist, human-readable JSON manifest, and shard-evidence index downloaded from the same successful workflow run. The packaging script verifies the archive and evidence-index hashes and sizes, source commit, exact Xcode build, all seven XCUITest artifact digests, test/privacy gates, release metadata, and every Mach-O architecture before signing the app extracted from that archive.
 - A valid **Developer ID Application** identity with its private key in the login Keychain. A Developer ID Installer identity is not required because the deliverable is an app ZIP, not a package installer.
+- The approved ten-character Apple Developer Team ID, recorded independently and supplied as `BLACKBOX_EXPECTED_TEAM_ID`. The packager rejects an identity or signed app from any other team.
 - A validated `notarytool` Keychain profile. Create it interactively so the Apple Account, Team ID, app-specific password, and 2FA response never enter the repository or shell history:
 
   ```bash
@@ -246,6 +247,7 @@ BLACKBOX_CI_ARCHIVE_PATH=/absolute/path/to/Blackbox-unsigned-universal2.xcarchiv
 BLACKBOX_CI_MANIFEST_PATH=/absolute/path/to/Blackbox-unsigned-universal2.manifest.plist \
 BLACKBOX_CI_EVIDENCE_INDEX_PATH=/absolute/path/to/Blackbox-evidence-artifact-digests.plist \
 BLACKBOX_DEVELOPER_ID_APPLICATION='Developer ID Application: Example (TEAMID1234)' \
+BLACKBOX_EXPECTED_TEAM_ID=TEAMID1234 \
 BLACKBOX_NOTARY_PROFILE=blackbox-notary-local \
 BLACKBOX_LIVE_DATA_ROOT="$HOME/Library/Application Support/Blackbox" \
 BLACKBOX_LIVE_HASH_MANIFEST="$TMPDIR/blackbox-release-evidence/live-hashes-before.txt" \

@@ -165,11 +165,11 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Amendment finalised; the original is preserved as superseded"].waitForExistence(timeout: 6))
         XCTAssertTrue(app.buttons["Create Amendment"].waitForExistence(timeout: 3))
 
-        app.buttons["flight.viewHistory"].click()
+        app.links["flight.viewHistory"].click()
         let historyContext = app.descendants(matching: .any)["history.context"]
         XCTAssertTrue(historyContext.waitForExistence(timeout: 6))
         XCTAssertTrue(element(containing: "amendment-chain history", type: .staticText).exists)
-        let relatedFlight = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "history.revision.flight.")).firstMatch
+        let relatedFlight = app.links.matching(NSPredicate(format: "identifier BEGINSWITH %@", "history.revision.flight.")).firstMatch
         XCTAssertTrue(relatedFlight.waitForExistence(timeout: 5))
         relatedFlight.click()
         XCTAssertTrue(flightsTable().waitForExistence(timeout: 6), "A history relationship must navigate to its preserved flight")
@@ -589,7 +589,7 @@ final class BlackboxUITests: XCTestCase {
             XCTAssertFalse(csvContents.contains(excludedDraft))
             XCTAssertFalse(htmlContents.contains(excludedDraft))
         }
-        app.buttons["reports.viewExportHistory"].click()
+        app.links["reports.viewExportHistory"].click()
         XCTAssertTrue(app.descendants(matching: .any)["history.screen"].waitForExistence(timeout: 6))
         let exportSummary = "Exported 1 finalised active records in CAA format"
         let exportOperation = app.descendants(matching: .any)
@@ -638,6 +638,10 @@ final class BlackboxUITests: XCTestCase {
     }
 
     func testKeyboardShortcutsAndConfiguredWindowSize() {
+        let fstdMetric = app.descendants(matching: .any)["dashboard.metric.fstd"]
+        XCTAssertTrue(fstdMetric.waitForExistence(timeout: 3))
+        XCTAssertEqual(fstdMetric.value as? String, "00:00")
+
         let requestedWidth = Double(ProcessInfo.processInfo.environment["BLACKBOX_UI_TEST_WIDTH"] ?? "0") ?? 0
         if requestedWidth > 0 {
             let displayFrame = app.screenshot().image.size
@@ -788,9 +792,11 @@ final class BlackboxUITests: XCTestCase {
         let identifier = "flight.field.\(label.flightAccessibilityIdentifierComponent)"
         let field = app.textFields.matching(identifier: identifier).firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5), "Missing text field \(identifier)")
-        if !field.isHittable {
-            scrollEditor(untilHittable: field)
-        }
+        // macOS can report an off-viewport ScrollView descendant as hittable.
+        // Always prove the field is wholly inside the editor before clicking;
+        // otherwise typing can be delivered to the element currently under
+        // the stale offscreen hit point.
+        scrollEditor(untilHittable: field)
         return field
     }
 
@@ -860,18 +866,24 @@ final class BlackboxUITests: XCTestCase {
         }
         XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
         XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
-        for _ in 0..<16 where !isSafelyVisible(element, in: editor) {
-            guard element.exists else {
-                editor.swipeUp(velocity: .slow)
-                continue
+        // A nominally slow trackpad swipe still travels roughly a full page on
+        // the hosted macOS runner. Elements near a viewport edge can therefore
+        // alternate above and below the editor forever. Discrete pixel scrolls
+        // converge without overshooting and are independent of animation mode.
+        let visibleFrame = editor.frame.insetBy(dx: 4, dy: 10)
+        let maximumStep: CGFloat = 160
+        for _ in 0..<24 {
+            if isSafelyVisible(element, in: editor) { return }
+            var deltaY = -maximumStep
+            if element.exists {
+                let targetFrame = element.frame
+                if !targetFrame.isEmpty, targetFrame.minY < visibleFrame.minY {
+                    deltaY = min(maximumStep, max(40, visibleFrame.minY - targetFrame.minY))
+                } else if !targetFrame.isEmpty, targetFrame.maxY > visibleFrame.maxY {
+                    deltaY = -min(maximumStep, max(40, targetFrame.maxY - visibleFrame.maxY))
+                }
             }
-            let targetFrame = element.frame
-            let editorFrame = editor.frame
-            if !targetFrame.isEmpty, targetFrame.midY < editorFrame.midY {
-                editor.swipeDown(velocity: .slow)
-            } else {
-                editor.swipeUp(velocity: .slow)
-            }
+            editor.scroll(byDeltaX: 0, deltaY: deltaY)
         }
         XCTAssertTrue(
             isSafelyVisible(element, in: editor),

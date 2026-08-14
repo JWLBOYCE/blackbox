@@ -373,6 +373,7 @@ enum UITestLaunchConfiguration {
             pilotFunction: "",
             totalMinutes: 80,
             copilotMinutes: 80,
+            copilotDayMinutes: 80,
             instrumentMinutes: 22,
             crossCountryMinutes: 80,
             pilotFlying: true,

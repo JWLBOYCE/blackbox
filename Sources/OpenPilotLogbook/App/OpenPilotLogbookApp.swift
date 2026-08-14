@@ -393,6 +393,7 @@ final class LogbookStore: ObservableObject {
     private var pendingExportFolder: URL?
     private let folderAccessStore: FolderAccessStore
     private let syntheticExportFolderSelection: @MainActor () -> URL?
+    private let migrationAuditRecorder: ((OperationBatch) throws -> Void)?
     private(set) var sessionUndoManager: UndoManager
     private let shouldAttachWindowUndoManager: Bool
     private weak var sessionUndoWindow: NSWindow?
@@ -427,6 +428,7 @@ final class LogbookStore: ObservableObject {
         platformServices: (any PlatformServices)? = nil,
         folderAccessStore: FolderAccessStore? = nil,
         undoManager: UndoManager? = nil,
+        migrationAuditRecorder: ((OperationBatch) throws -> Void)? = nil,
         syntheticExportFolderSelection: @escaping @MainActor () -> URL? = {
             UITestLaunchConfiguration.syntheticFolderSelectionForCurrentLaunch()
         }
@@ -439,6 +441,7 @@ final class LogbookStore: ObservableObject {
         self.platformServices = platformServices ?? MacPlatformServices()
         self.folderAccessStore = folderAccessStore ?? FolderAccessStore()
         self.syntheticExportFolderSelection = syntheticExportFolderSelection
+        self.migrationAuditRecorder = migrationAuditRecorder
         self.shouldAttachWindowUndoManager = undoManager == nil
         let resolvedUndoManager = undoManager ?? UndoManager()
         resolvedUndoManager.groupsByEvent = false
@@ -621,6 +624,12 @@ final class LogbookStore: ObservableObject {
     }
 
     func selectFlight(id: Int64?) {
+        // Table(selection:) can echo a programmatic selection change back
+        // through its onChange callback on a later view-update pass. Treat a
+        // same-record echo as a no-op: if the editor became dirty in between,
+        // presenting the unsaved-navigation alert would block the action the
+        // pilot actually chose (for example, finalising a new amendment).
+        guard id != selectedFlightID else { return }
         if isDraftDirty {
             pendingSelectionID = id
             showDiscardConfirmation = true
@@ -1001,9 +1010,12 @@ final class LogbookStore: ObservableObject {
         case .departureCoordinates: return lhs.departureLatitude == rhs.departureLatitude && lhs.departureLongitude == rhs.departureLongitude
         case .arrivalCoordinates: return lhs.arrivalLatitude == rhs.arrivalLatitude && lhs.arrivalLongitude == rhs.arrivalLongitude
         case .nightMinutes: return lhs.nightMinutes == rhs.nightMinutes
-        case .picMinutes: return lhs.picMinutes == rhs.picMinutes
-        case .picusMinutes: return lhs.picusMinutes == rhs.picusMinutes
-        case .copilotMinutes: return lhs.copilotMinutes == rhs.copilotMinutes
+        case .picMinutes:
+            return lhs.picMinutes == rhs.picMinutes && lhs.picDayMinutes == rhs.picDayMinutes && lhs.picNightMinutes == rhs.picNightMinutes
+        case .picusMinutes:
+            return lhs.picusMinutes == rhs.picusMinutes && lhs.picusDayMinutes == rhs.picusDayMinutes && lhs.picusNightMinutes == rhs.picusNightMinutes
+        case .copilotMinutes:
+            return lhs.copilotMinutes == rhs.copilotMinutes && lhs.copilotDayMinutes == rhs.copilotDayMinutes && lhs.copilotNightMinutes == rhs.copilotNightMinutes
         case .dualMinutes: return lhs.dualMinutes == rhs.dualMinutes
         case .instructorMinutes: return lhs.instructorMinutes == rhs.instructorMinutes
         case .fstdMinutes: return lhs.fstdMinutes == rhs.fstdMinutes
@@ -1022,9 +1034,18 @@ final class LogbookStore: ObservableObject {
             target.arrivalLatitude = source.arrivalLatitude
             target.arrivalLongitude = source.arrivalLongitude
         case .nightMinutes: target.nightMinutes = source.nightMinutes
-        case .picMinutes: target.picMinutes = source.picMinutes
-        case .picusMinutes: target.picusMinutes = source.picusMinutes
-        case .copilotMinutes: target.copilotMinutes = source.copilotMinutes
+        case .picMinutes:
+            target.picMinutes = source.picMinutes
+            target.picDayMinutes = source.picDayMinutes
+            target.picNightMinutes = source.picNightMinutes
+        case .picusMinutes:
+            target.picusMinutes = source.picusMinutes
+            target.picusDayMinutes = source.picusDayMinutes
+            target.picusNightMinutes = source.picusNightMinutes
+        case .copilotMinutes:
+            target.copilotMinutes = source.copilotMinutes
+            target.copilotDayMinutes = source.copilotDayMinutes
+            target.copilotNightMinutes = source.copilotNightMinutes
         case .dualMinutes: target.dualMinutes = source.dualMinutes
         case .instructorMinutes: target.instructorMinutes = source.instructorMinutes
         case .fstdMinutes: target.fstdMinutes = source.fstdMinutes
@@ -1437,9 +1458,10 @@ final class LogbookStore: ObservableObject {
 
     func chooseAndExportReports() {
         if let syntheticSelection = syntheticExportFolderSelection() {
-            DispatchQueue.main.async { [weak self] in
-                self?.requestExport(to: syntheticSelection)
-            }
+            // This branch is already entered from a @MainActor UI action. A
+            // second main-queue hop can leave SwiftUI in a disabled ghost-modal
+            // state without materialising the confirmation sheet on macOS.
+            requestExport(to: syntheticSelection)
             return
         }
         platformServices.chooseFolder(title: "Choose Export Folder", prompt: "Export Here") { [weak self] url in
@@ -1560,6 +1582,10 @@ final class LogbookStore: ObservableObject {
     }
 
     func restoreEncryptedBackup(url: URL) {
+        if let existingPlan = pendingRestorePlan {
+            repository.discardRestorePlan(existingPlan)
+            pendingRestorePlan = nil
+        }
         do {
             pendingRestorePlan = try withScopedAccess(to: url) {
                 try repository.prepareRestore(from: url, passphrase: backupPassphrase)
@@ -1573,12 +1599,12 @@ final class LogbookStore: ObservableObject {
 
     func applyPendingRestore() {
         guard let plan = pendingRestorePlan else { return }
+        pendingRestorePlan = nil
         do {
             let restorePoint = try repository.applyRestore(
                 plan,
                 injectingFailureAt: UITestLaunchConfiguration.restoreFailureStageForCurrentLaunch()
             )
-            pendingRestorePlan = nil
             selectedFlightID = nil
             selectedRouteFlightIDs = []
             draftFlight = nil
@@ -1593,20 +1619,19 @@ final class LogbookStore: ObservableObject {
         }
     }
 
+    func cancelPendingRestore() {
+        guard let plan = pendingRestorePlan else { return }
+        repository.discardRestorePlan(plan)
+        pendingRestorePlan = nil
+        statusMessage = "Restore preview cancelled. No records were changed, and the decrypted preview was removed."
+    }
+
     func performUpgrade() {
         guard let upgradePreflight else { return }
+
+        let backup: URL
         do {
-            let backup = try repository.backUpAndUpgrade(using: upgradePreflight)
-            try repository.recordOperation(OperationBatch(
-                kind: "migration", source: paths.workingDatabase.path, status: "completed",
-                summary: "Schema \(upgradePreflight.currentSchemaVersion) upgraded to \(upgradePreflight.targetSchemaVersion) after verified backup",
-                backupPath: backup.path, completedAt: Date(), affectedCount: upgradePreflight.flightCount,
-                beforeTotalMinutes: summary.totalMinutes, afterTotalMinutes: summary.totalMinutes,
-                recoveryOutcome: "Pre-upgrade database retained", artifactURLs: [backup]
-            ))
-            self.upgradePreflight = nil
-            refresh()
-            statusMessage = "Upgrade complete. Preserved backup: \(backup.lastPathComponent)."
+            backup = try repository.backUpAndUpgrade(using: upgradePreflight)
         } catch {
             recordFailedOperation(
                 kind: "migration",
@@ -1616,7 +1641,72 @@ final class LogbookStore: ObservableObject {
                 totalMinutes: summary.totalMinutes
             )
             statusMessage = "Upgrade failed without completing: \(error)"
+            return
         }
+
+        // The schema transaction has committed once backUpAndUpgrade returns.
+        // Everything below is audit/reporting work and must never relabel that
+        // completed migration as a failed upgrade.
+        self.upgradePreflight = nil
+        var auditFailure: Error?
+        do {
+            let beforeSummary = try Self.migrationAuditSummary(at: backup)
+            let afterSummary = try repository.summary()
+            guard beforeSummary.flightCount == afterSummary.flightCount,
+                  beforeSummary.totalMinutes == afterSummary.totalMinutes else {
+                throw LogbookRepositoryError.integrityCheckFailed(
+                    "The verified backup and upgraded database totals do not match."
+                )
+            }
+            let batch = OperationBatch(
+                kind: "migration", source: paths.workingDatabase.path, status: "completed",
+                summary: "Schema \(upgradePreflight.currentSchemaVersion) upgraded to \(upgradePreflight.targetSchemaVersion) after verified backup",
+                backupPath: backup.path, completedAt: Date(), affectedCount: upgradePreflight.flightCount,
+                beforeTotalMinutes: beforeSummary.totalMinutes, afterTotalMinutes: afterSummary.totalMinutes,
+                recoveryOutcome: "Pre-upgrade database retained", artifactURLs: [backup]
+            )
+            if let migrationAuditRecorder {
+                try migrationAuditRecorder(batch)
+            } else {
+                try repository.recordOperation(batch)
+            }
+        } catch {
+            auditFailure = error
+        }
+
+        refresh()
+        if let auditFailure {
+            statusMessage = "Upgrade complete. Preserved backup: \(backup.lastPathComponent). Migration history was not recorded: \(auditFailure.localizedDescription)"
+        } else {
+            statusMessage = "Upgrade complete. Preserved backup: \(backup.lastPathComponent)."
+        }
+    }
+
+    /// Reads the same active-flight total used by the current repository while
+    /// remaining compatible with a legacy schema that predates record_state or
+    /// fstd_minutes. The source is the already verified, read-only migration
+    /// backup, so this calculation cannot change historical flight rows.
+    static func migrationAuditSummary(at databaseURL: URL) throws -> LogbookSummary {
+        let database = try SQLiteConnection(path: databaseURL.path, readOnly: true)
+        let columns = Set(try database.rows("PRAGMA table_info(flights)").compactMap { $0["name"]?.string })
+        guard columns.contains("total_minutes") else {
+            throw LogbookRepositoryError.invalidState(
+                "The verified backup does not contain the total_minutes flight field."
+            )
+        }
+        let fstdMinutes = columns.contains("fstd_minutes") ? "COALESCE(fstd_minutes, 0)" : "0"
+        let activeFilter = columns.contains("record_state")
+            ? " WHERE record_state IN ('draft', 'finalised')"
+            : ""
+        let row = try database.rows("""
+        SELECT COUNT(*) AS flight_count,
+               COALESCE(SUM(MAX(COALESCE(total_minutes, 0) - \(fstdMinutes), 0)), 0) AS total_minutes
+        FROM flights\(activeFilter)
+        """).first ?? [:]
+        return LogbookSummary(
+            flightCount: row["flight_count"]?.int ?? 0,
+            totalMinutes: row["total_minutes"]?.int ?? 0
+        )
     }
 
     private func recordFailedOperation(kind: String, source: String, summary: String, affectedCount: Int, totalMinutes: Int) {

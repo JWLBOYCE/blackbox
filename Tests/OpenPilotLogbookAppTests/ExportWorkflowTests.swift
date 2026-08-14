@@ -39,6 +39,8 @@ struct ExportWorkflowTests {
         fixture.store.chooseAndExportReports()
         #expect(selectionRequestCount == 1)
         #expect(fixture.platformServices.folderRequests.isEmpty)
+        #expect(fixture.store.showExportConfirmation)
+        #expect(fixture.store.pendingExportDestinationName == syntheticExportFolder?.path(percentEncoded: false))
 
         fixture.store.chooseAndCreateEncryptedBackup()
         #expect(selectionRequestCount == 1)

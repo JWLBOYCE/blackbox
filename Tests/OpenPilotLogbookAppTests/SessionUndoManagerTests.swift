@@ -67,6 +67,38 @@ struct SessionUndoManagerTests {
         #expect(fixture.store.canUndoSessionAction)
     }
 
+    @Test("PICUS allocation Undo and Redo preserve the complete day and night split")
+    func picusAllocationUndoAndRedo() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanUp() }
+
+        fixture.store.startNewFlight()
+        fixture.store.draftFlight?.departure = "EGLL"
+        fixture.store.draftFlight?.arrival = "EGKK"
+        fixture.store.draftFlight?.pilotFunction = "PICUS"
+        fixture.store.draftFlight?.totalMinutes = 60
+        fixture.store.draftFlight?.nightMinutes = 0
+        fixture.store.draftDidChange()
+
+        let suggestion = try #require(
+            fixture.store.flightSuggestions.first { $0.field == .picusMinutes && $0.isActionable }
+        )
+        fixture.store.acceptSuggestion(suggestion)
+        #expect(fixture.store.draftFlight?.picusMinutes == 60)
+        #expect(fixture.store.draftFlight?.picusDayMinutes == 60)
+        #expect(fixture.store.draftFlight?.picusNightMinutes == 0)
+
+        fixture.store.undoLastSessionAction()
+        #expect(fixture.store.draftFlight?.picusMinutes == 0)
+        #expect(fixture.store.draftFlight?.picusDayMinutes == 0)
+        #expect(fixture.store.draftFlight?.picusNightMinutes == 0)
+
+        fixture.store.redoLastSessionAction()
+        #expect(fixture.store.draftFlight?.picusMinutes == 60)
+        #expect(fixture.store.draftFlight?.picusDayMinutes == 60)
+        #expect(fixture.store.draftFlight?.picusNightMinutes == 0)
+    }
+
     @Test("A newer native text edit is undone before an older session action")
     func commandRoutingPreservesNewerNativeUndo() throws {
         let fixture = try makeStore()
@@ -265,6 +297,32 @@ struct SessionUndoManagerTests {
 
         #expect(fixture.store.draftFlight?.departureLatitude == 48.0)
         #expect(fixture.store.statusMessage.contains("an affected field changed afterward"))
+    }
+
+    @Test("A programmatic same-row selection never raises unsaved navigation")
+    func sameRowSelectionEchoIsIgnored() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanUp() }
+
+        let id = try fixture.store.repository.saveDraft(FlightEntry(
+            date: Date(timeIntervalSinceReferenceDate: 800_000_000),
+            departure: "EGLL",
+            arrival: "EHAM",
+            aircraftID: "G-SELECT",
+            totalMinutes: 60
+        ), origin: "app_test_fixture")
+        fixture.store.refresh()
+        fixture.store.selectFlightImmediately(id: id)
+        fixture.store.draftFlight?.remarks = "Locally edited after the selection callback was queued"
+        fixture.store.draftDidChange()
+
+        fixture.store.selectFlight(id: id)
+
+        #expect(fixture.store.selectedFlightID == id)
+        #expect(fixture.store.draftFlight?.remarks == "Locally edited after the selection callback was queued")
+        #expect(fixture.store.isDraftDirty)
+        #expect(!fixture.store.showDiscardConfirmation)
+        #expect(fixture.store.pendingSelectionID == nil)
     }
 
     @Test("Trash supports durable Undo and Redo without a window")

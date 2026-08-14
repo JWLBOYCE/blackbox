@@ -229,7 +229,7 @@ struct ReliabilityTests {
         let originalID = try repository.saveDraft(FlightEntry(
             date: fixedDate(), departure: "OLD1", arrival: "OLD2",
             aircraftID: "G-OLD", aircraftType: "OLD-TYPE", pilotFunction: "Co-pilot",
-            totalMinutes: 60, copilotMinutes: 60, totalLandings: 1,
+            totalMinutes: 60, copilotMinutes: 60, copilotDayMinutes: 60, totalLandings: 1,
             crewNames: "Original Crew"
         ))
         let original = try #require(try repository.flight(id: originalID))
@@ -243,6 +243,7 @@ struct ReliabilityTests {
         amendment.aircraftType = "ACTIVE-TYPE"
         amendment.totalMinutes = 70
         amendment.copilotMinutes = 70
+        amendment.copilotDayMinutes = 70
         amendment.totalLandings = 2
         amendment.crewNames = "Active Crew"
         _ = try repository.saveDraft(amendment)
@@ -265,7 +266,7 @@ struct ReliabilityTests {
         #expect(aircraft == [AircraftSummary(aircraftID: "G-ACTIVE", aircraftType: "ACTIVE-TYPE", flightCount: 1, totalMinutes: 70, landings: 2)])
 
         let types = try repository.typeSummaries()
-        #expect(types == [TypeSummary(aircraftType: "ACTIVE-TYPE", flightCount: 1, totalMinutes: 70, copilotDayMinutes: 0, copilotNightMinutes: 0, distanceNM: 0)])
+        #expect(types == [TypeSummary(aircraftType: "ACTIVE-TYPE", flightCount: 1, totalMinutes: 70, copilotDayMinutes: 70, copilotNightMinutes: 0, distanceNM: 0)])
 
         let people = try repository.personSummaries()
         #expect(people == [PersonSummary(name: "Active Crew", flightCount: 1, totalMinutes: 70)])
@@ -449,10 +450,25 @@ struct ReliabilityTests {
 
     @Test("Conservative role suggestions never overwrite entered roles")
     func roleSuggestionsAreConservative() {
-        let eligible = FlightEntry(date: fixedDate(), departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST", pilotFunction: "Co-pilot", totalMinutes: 60)
+        let eligible = FlightEntry(date: fixedDate(), departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST", pilotFunction: "Co-pilot", totalMinutes: 60, nightMinutes: 15)
         let role = FlightSuggestionEngine.suggestions(for: eligible).first { $0.field == .copilotMinutes }
         #expect(role?.numericValue == 60)
         #expect(role?.method.contains("Exact") == true)
+        let allocated = FlightSuggestionEngine.applying(try! #require(role), to: eligible)
+        #expect(allocated.copilotMinutes == 60)
+        #expect(allocated.copilotDayMinutes == 45)
+        #expect(allocated.copilotNightMinutes == 15)
+
+        var picus = eligible
+        picus.pilotFunction = "PICUS"
+        picus.nightMinutes = 0
+        let picusRole = FlightSuggestionEngine.suggestions(for: picus).first { $0.field == .picusMinutes }
+        #expect(picusRole?.numericValue == 60)
+        let picusAllocated = FlightSuggestionEngine.applying(try! #require(picusRole), to: picus)
+        #expect(picusAllocated.picusMinutes == 60)
+        #expect(picusAllocated.picusDayMinutes == 60)
+        #expect(picusAllocated.picusNightMinutes == 0)
+
         var entered = eligible
         entered.picMinutes = 1
         let unavailable = FlightSuggestionEngine.suggestions(for: entered).first { $0.title == "Role allocation" }
@@ -481,6 +497,31 @@ struct ReliabilityTests {
         #expect(report.issues.contains { $0.field == "Total time" && $0.severity == .error })
         #expect(report.issues.contains { $0.field == "Departure latitude" && $0.severity == .error })
         #expect(report.issues.contains { $0.field == "Amendment" && $0.severity == .error })
+    }
+
+    @Test("Role day and night splits must fully allocate the role total")
+    func roleSplitsMustBalance() {
+        let incomplete = FlightEntry(
+            date: fixedDate(), departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST",
+            pilotFunction: "PICUS", totalMinutes: 60, picusMinutes: 60, picusDayMinutes: 0, picusNightMinutes: 0
+        )
+        let report = FlightSuggestionEngine.validationReport(for: incomplete)
+        #expect(report.issues.contains { $0.field == "PICUS split" && $0.severity == .error })
+
+        var complete = incomplete
+        complete.picusDayMinutes = 60
+        #expect(!FlightSuggestionEngine.validationReport(for: complete).issues.contains { $0.field == "PICUS split" })
+
+        complete.picusMinutes = 55
+        let incompleteTotal = FlightSuggestionEngine.validationReport(for: complete)
+        #expect(incompleteTotal.issues.contains { $0.field == "PICUS allocation" && $0.severity == .error })
+
+        complete.picusMinutes = 60
+        complete.picusDayMinutes = 45
+        complete.picusNightMinutes = 15
+        complete.nightMinutes = 10
+        let mismatchedNight = FlightSuggestionEngine.validationReport(for: complete)
+        #expect(mismatchedNight.issues.contains { $0.field == "PICUS night" && $0.severity == .error })
     }
 
     @Test("Trash, revision diff, and bulk Restore remain recoverable")
@@ -1026,7 +1067,7 @@ struct ReliabilityTests {
     }
 
     private func validFlight(recordState: FlightRecordState = .draft) -> FlightEntry {
-        FlightEntry(date: fixedDate(), departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST", aircraftType: "A320", operation: "MP", pilotFunction: "Co-pilot", totalMinutes: 60, copilotMinutes: 60, recordState: recordState)
+        FlightEntry(date: fixedDate(), departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST", aircraftType: "A320", operation: "MP", pilotFunction: "Co-pilot", totalMinutes: 60, copilotMinutes: 60, copilotDayMinutes: 60, recordState: recordState)
     }
 
     private func tempDirectory() throws -> URL {

@@ -20,15 +20,16 @@ expect(emptySummary.flightCount == 0, "expected empty isolated logbook")
 let date = ISO8601DateFormatter().date(from: "2026-06-21T12:00:00Z")!
 let entered = FlightEntry(
     sourcePK: 900_001, date: date, departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST", aircraftType: "A320",
-    flightNumber: "TST101", operation: "MP", pilotFunction: "Co-pilot", totalMinutes: 65, picMinutes: 5,
-    copilotMinutes: 60, instrumentMinutes: 0, crossCountryMinutes: 0, fstdMinutes: 7, pilotFlying: true,
+    flightNumber: "TST101", operation: "MP", pilotFunction: "Co-pilot", totalMinutes: 65,
+    picMinutes: 5, picDayMinutes: 5, copilotMinutes: 65, copilotDayMinutes: 65,
+    instrumentMinutes: 0, crossCountryMinutes: 0, fstdMinutes: 7, pilotFlying: true,
     totalTakeoffs: 4, totalLandings: 5, crewNames: "Casey Captain | Avery Pilot", crewRoles: "Casey Captain=Captain | Avery Pilot=First Officer",
     remarks: "Synthetic smoke flight", signatureName: "Synthetic Signer", signatureReference: "SYN-1"
 )
 let flightID = try repository.saveDraft(entered)
 let saved = try repository.flight(id: flightID)!
 expect(saved.pilotFunction == "Co-pilot", "pilot function must not be rewritten")
-expect(saved.picMinutes == 5 && saved.copilotMinutes == 60, "role times must not be reallocated")
+expect(saved.picMinutes == 5 && saved.picDayMinutes == 5 && saved.copilotMinutes == 65 && saved.copilotDayMinutes == 65, "role times and day/night splits must not be reallocated")
 expect(saved.instrumentMinutes == 0 && saved.crossCountryMinutes == 0, "entered zero values must remain zero")
 expect(saved.fstdMinutes == 7 && saved.pilotFlying, "mixed entered values must remain intact")
 expect(saved.totalTakeoffs == 4 && saved.totalLandings == 5, "entered totals must remain intact")

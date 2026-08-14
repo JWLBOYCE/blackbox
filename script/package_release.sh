@@ -18,6 +18,7 @@ Required environment:
   BLACKBOX_CI_MANIFEST_PATH           Downloaded CI XML manifest plist
   BLACKBOX_CI_EVIDENCE_INDEX_PATH     Downloaded CI shard-evidence index plist
   BLACKBOX_DEVELOPER_ID_APPLICATION   Developer ID Application name or SHA-1 identity
+  BLACKBOX_EXPECTED_TEAM_ID           Approved 10-character Apple Developer Team ID
   BLACKBOX_NOTARY_PROFILE            notarytool profile stored in the login Keychain
   BLACKBOX_LIVE_DATA_ROOT            Existing live Application Support/Blackbox root
   BLACKBOX_LIVE_HASH_MANIFEST        Baseline from release_live_hashes.sh capture
@@ -70,7 +71,6 @@ verify_ci_manifest() {
     local digest_key
     local indexed_digest
     local event_name
-    local pull_request_number
     local workflow_ref
 
     /usr/bin/plutil -lint "$manifest" "$CI_EVIDENCE_INDEX" >/dev/null
@@ -84,29 +84,10 @@ verify_ci_manifest() {
     [[ "$(plist_value workflow "$manifest")" == "Swift CI" ]] || fail "CI manifest workflow is unexpected."
     event_name="$(plist_value eventName "$manifest")"
     workflow_ref="$(plist_value workflowRef "$manifest")"
-    case "$event_name" in
-        push)
-            [[ "$workflow_ref" == "JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/heads/main" ]] || fail "Push release input is not from the workflow on main."
-            [[ "$(plist_value sourceRef "$manifest")" == "refs/heads/main" ]] || fail "Push release input must come from the main branch."
-            [[ -z "$(plist_value headRepository "$manifest")" && -z "$(plist_value headRef "$manifest")" && -z "$(plist_value headSHA "$manifest")" && -z "$(plist_value baseRef "$manifest")" && -z "$(plist_value pullRequestNumber "$manifest")" ]] || fail "Push release input unexpectedly contains pull-request provenance."
-            ;;
-        pull_request)
-            pull_request_number="$(plist_value pullRequestNumber "$manifest")"
-            [[ "$pull_request_number" =~ ^[1-9][0-9]*$ ]] || fail "CI manifest pull-request number is invalid."
-            [[ "$(plist_value sourceRef "$manifest")" == "refs/pull/$pull_request_number/merge" ]] || fail "CI manifest pull-request trigger ref is inconsistent."
-            case "$workflow_ref" in
-                "JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/pull/$pull_request_number/merge"|"JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/heads/main") ;;
-                *) fail "Pull-request release input has an unexpected workflow reference." ;;
-            esac
-            [[ "$(plist_value headRepository "$manifest")" == "JWLBOYCE/blackbox" ]] || fail "CI release-input PR must originate in the Blackbox repository."
-            [[ "$(plist_value headRef "$manifest")" == "codex/blackbox-release-completion" ]] || fail "CI release-input PR has an unexpected head branch."
-            [[ "$(plist_value headSHA "$manifest")" == "$SOURCE_COMMIT" ]] || fail "CI release-input PR head SHA does not match the checked-out commit."
-            [[ "$(plist_value baseRef "$manifest")" == "main" ]] || fail "CI release-input PR must target main."
-            ;;
-        *)
-            fail "CI release input has an unsupported workflow event."
-            ;;
-    esac
+    [[ "$event_name" == push ]] || fail "CI release input must come from a protected-main push, not a pull request."
+    [[ "$workflow_ref" == "JWLBOYCE/blackbox/.github/workflows/ci.yml@refs/heads/main" ]] || fail "Push release input is not from the workflow on main."
+    [[ "$(plist_value sourceRef "$manifest")" == "refs/heads/main" ]] || fail "Push release input must come from the main branch."
+    [[ -z "$(plist_value headRepository "$manifest")" && -z "$(plist_value headRef "$manifest")" && -z "$(plist_value headSHA "$manifest")" && -z "$(plist_value baseRef "$manifest")" && -z "$(plist_value pullRequestNumber "$manifest")" ]] || fail "Push release input unexpectedly contains pull-request provenance."
     [[ "$(plist_value runID "$manifest")" =~ ^[0-9]+$ ]] || fail "CI manifest run ID is invalid."
     [[ "$(plist_value runAttempt "$manifest")" =~ ^[1-9][0-9]*$ ]] || fail "CI manifest run attempt is invalid."
     [[ "$(plist_value workflowRunURL "$manifest")" == "https://github.com/JWLBOYCE/blackbox/actions/runs/$(plist_value runID "$manifest")" ]] || fail "CI manifest workflow URL does not match its repository and run ID."
@@ -330,6 +311,7 @@ CI_ARCHIVE="${BLACKBOX_CI_ARCHIVE_PATH:-}"
 CI_MANIFEST="${BLACKBOX_CI_MANIFEST_PATH:-}"
 CI_EVIDENCE_INDEX="${BLACKBOX_CI_EVIDENCE_INDEX_PATH:-}"
 IDENTITY="${BLACKBOX_DEVELOPER_ID_APPLICATION:-}"
+EXPECTED_TEAM_ID="${BLACKBOX_EXPECTED_TEAM_ID:-}"
 NOTARY_PROFILE="${BLACKBOX_NOTARY_PROFILE:-}"
 LIVE_DATA_ROOT="${BLACKBOX_LIVE_DATA_ROOT:-}"
 LIVE_HASH_MANIFEST="${BLACKBOX_LIVE_HASH_MANIFEST:-}"
@@ -338,6 +320,7 @@ LIVE_HASH_MANIFEST="${BLACKBOX_LIVE_HASH_MANIFEST:-}"
 [[ -n "$CI_MANIFEST" ]] || fail "Set BLACKBOX_CI_MANIFEST_PATH to the downloaded CI XML manifest plist."
 [[ -n "$CI_EVIDENCE_INDEX" ]] || fail "Set BLACKBOX_CI_EVIDENCE_INDEX_PATH to the downloaded CI shard-evidence index plist."
 [[ -n "$IDENTITY" ]] || fail "Set BLACKBOX_DEVELOPER_ID_APPLICATION to a Developer ID Application identity."
+[[ "$EXPECTED_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || fail "Set BLACKBOX_EXPECTED_TEAM_ID to the approved 10-character Apple Developer Team ID."
 [[ -n "$NOTARY_PROFILE" ]] || fail "Set BLACKBOX_NOTARY_PROFILE to a notarytool Keychain profile name."
 [[ -n "$LIVE_DATA_ROOT" ]] || fail "Set BLACKBOX_LIVE_DATA_ROOT explicitly."
 [[ -n "$LIVE_HASH_MANIFEST" ]] || fail "Set BLACKBOX_LIVE_HASH_MANIFEST to the approved pre-work baseline."
@@ -382,8 +365,9 @@ verify_ci_manifest
 identity_line="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null \
     | /usr/bin/grep -F -- "$IDENTITY" \
     | /usr/bin/grep 'Developer ID Application:' \
+    | /usr/bin/grep -F -- "($EXPECTED_TEAM_ID)" \
     | /usr/bin/head -n 1 || true)"
-[[ -n "$identity_line" ]] || fail "The selected Keychain identity is not a valid Developer ID Application identity."
+[[ -n "$identity_line" ]] || fail "The selected identity is not a Developer ID Application identity for the approved Team ID."
 if ! /usr/bin/xcrun notarytool history \
     --keychain-profile "$NOTARY_PROFILE" --output-format json >/dev/null; then
     fail "The selected notarytool Keychain profile could not be authenticated."
@@ -501,7 +485,7 @@ printf '%s  %s\n' "$final_sha256" "$(basename "$FINAL_ZIP")" > "$CHECKSUM_FILE"
 
 team_identifier="$(/usr/bin/codesign --display --verbose=4 "$STAGED_APP" 2>&1 \
     | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2; exit}')"
-[[ "$team_identifier" =~ ^[A-Z0-9]{10}$ ]] || fail "Signed app has no valid TeamIdentifier."
+[[ "$team_identifier" == "$EXPECTED_TEAM_ID" ]] || fail "Signed app TeamIdentifier does not match the approved Apple Team ID."
 baseline_sha256="$(/usr/bin/shasum -a 256 "$LIVE_HASH_MANIFEST" | /usr/bin/awk '{print $1}')"
 created_at="$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')"
 

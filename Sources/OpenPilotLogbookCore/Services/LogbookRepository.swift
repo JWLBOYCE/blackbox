@@ -427,6 +427,114 @@ public final class LogbookRepository {
         """)
     }
 
+    /// A restored database is untrusted input even when its encrypted envelope
+    /// is authentic: the person supplying the passphrase may not be the person
+    /// who created its SQLite schema. Reject executable schema objects before
+    /// migration, then compare the migrated structure with a database created
+    /// by this build before the candidate can become active.
+    private func rejectExecutableRestoreSchema(in db: SQLiteConnection) throws {
+        let objects = try db.rows("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+        for object in objects {
+            let type = object["type"]?.string.lowercased() ?? ""
+            let name = object["name"]?.string ?? ""
+            let sql = object["sql"]?.string.uppercased() ?? ""
+            if type == "trigger" || type == "view" || sql.contains("CREATE VIRTUAL TABLE") {
+                throw LogbookRepositoryError.invalidState("The backup contains an unsupported executable SQLite schema object: \(name).")
+            }
+        }
+    }
+
+    private func validateCanonicalRestoreSchema(in db: SQLiteConnection, workspace: URL) throws {
+        let canonicalURL = workspace.appendingPathComponent("Canonical-Schema-\(UUID().uuidString).sqlite")
+        defer {
+            try? FileManager.default.removeItem(at: canonicalURL)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: canonicalURL.path + "-wal"))
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: canonicalURL.path + "-shm"))
+        }
+        let canonical = try SQLiteConnection(path: canonicalURL.path)
+        try createSchema(in: canonical)
+        let expected = try schemaFingerprint(in: canonical)
+        let actual = try schemaFingerprint(in: db)
+        guard actual == expected else {
+            let firstMismatch = zip(expected, actual).first { $0 != $1 }
+            let detail: String
+            if let firstMismatch {
+                detail = " Expected \(firstMismatch.0); found \(firstMismatch.1)."
+            } else {
+                detail = " Expected \(expected.count) schema entries; found \(actual.count)."
+            }
+            throw LogbookRepositoryError.invalidState("The backup schema does not match the canonical Blackbox schema.\(detail)")
+        }
+    }
+
+    private func schemaFingerprint(in db: SQLiteConnection) throws -> [String] {
+        let objectRows = try db.rows("""
+        SELECT type, name, tbl_name
+        FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name, tbl_name
+        """)
+        var fingerprint = objectRows.map { row in
+            "object|\(row["type"]?.string ?? "")|\(row["name"]?.string ?? "")|\(row["tbl_name"]?.string ?? "")"
+        }
+        let tableNames = objectRows
+            .filter { $0["type"]?.string == "table" }
+            .compactMap { $0["name"]?.string }
+            .sorted()
+        for table in tableNames {
+            let quotedTable = table.replacingOccurrences(of: "'", with: "''")
+            let columns = try db.rows("PRAGMA table_xinfo('\(quotedTable)')")
+                .sorted { ($0["name"]?.string ?? "") < ($1["name"]?.string ?? "") }
+            for row in columns {
+                fingerprint.append([
+                    "column", table,
+                    row["name"]?.string ?? "",
+                    row["type"]?.string.uppercased() ?? "",
+                    row["notnull"]?.string ?? "",
+                    row["pk"]?.string ?? "",
+                    row["hidden"]?.string ?? ""
+                ].joined(separator: "|"))
+            }
+            let indexes = try db.rows("PRAGMA index_list('\(quotedTable)')")
+                .filter { !($0["name"]?.string ?? "").hasPrefix("sqlite_autoindex_") }
+                .sorted { ($0["name"]?.string ?? "") < ($1["name"]?.string ?? "") }
+            for index in indexes {
+                let indexName = index["name"]?.string ?? ""
+                fingerprint.append([
+                    "index", table, indexName,
+                    index["unique"]?.string ?? "",
+                    index["origin"]?.string ?? "",
+                    index["partial"]?.string ?? ""
+                ].joined(separator: "|"))
+                let quotedIndex = indexName.replacingOccurrences(of: "'", with: "''")
+                for row in try db.rows("PRAGMA index_xinfo('\(quotedIndex)')") {
+                    fingerprint.append([
+                        "index-column", indexName,
+                        row["seqno"]?.string ?? "",
+                        row["name"]?.string ?? "",
+                        row["desc"]?.string ?? "",
+                        row["coll"]?.string ?? "",
+                        row["key"]?.string ?? ""
+                    ].joined(separator: "|"))
+                }
+            }
+            for row in try db.rows("PRAGMA foreign_key_list('\(quotedTable)')") {
+                fingerprint.append([
+                    "foreign-key", table,
+                    row["id"]?.string ?? "",
+                    row["seq"]?.string ?? "",
+                    row["table"]?.string ?? "",
+                    row["from"]?.string ?? "",
+                    row["to"]?.string ?? "",
+                    row["on_update"]?.string ?? "",
+                    row["on_delete"]?.string ?? "",
+                    row["match"]?.string ?? ""
+                ].joined(separator: "|"))
+            }
+        }
+        return fingerprint
+    }
+
     private func amendmentPreflightIssues(in db: SQLiteConnection) throws -> [String] {
         let columns = Set(try db.rows("PRAGMA table_info(flights)").compactMap { $0["name"]?.string })
         guard columns.contains("record_state"), columns.contains("amends_flight_id"), columns.contains("superseded_by_flight_id") else {
@@ -1382,6 +1490,11 @@ public final class LogbookRepository {
         try? FileManager.default.removeItem(at: root)
     }
 
+    public func discardRestorePlan(_ plan: RestorePlan) {
+        guard let root = try? validatedRestoreArtifactRoot(for: plan) else { return }
+        try? FileManager.default.removeItem(at: root)
+    }
+
     private func prepareImportPlan(proposed: [FlightEntry], sourceURL: URL, sourceSnapshotURL: URL?, sourceKind: ImportSourceKind) throws -> ImportPlan {
         let grouped = Dictionary(grouping: proposed.compactMap { flight -> (Int64, FlightEntry)? in
             flight.sourcePK.map { ($0, flight) }
@@ -1948,12 +2061,17 @@ public final class LogbookRepository {
     public func prepareRestore(from encryptedBackupURL: URL, passphrase: String) throws -> RestorePlan {
         let artifactToken = UUID()
         let folder = Self.restoreArtifactRoot(for: artifactToken)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         let inspectedURL = folder.appendingPathComponent("Inspected.sqlite")
         do {
             try EncryptedBackupService.decryptBackup(encryptedBackup: encryptedBackupURL, destinationDatabase: inspectedURL, passphrase: passphrase)
             let originalVersion: Int = try {
                 let decrypted = try SQLiteConnection(path: inspectedURL.path, readOnly: true)
+                try rejectExecutableRestoreSchema(in: decrypted)
                 return try schemaVersion(in: decrypted)
             }()
             guard originalVersion <= Self.currentSchemaVersion else {
@@ -1968,6 +2086,8 @@ public final class LogbookRepository {
                 try LogbookRepository(paths: inspectedPaths).bootstrapIfNeeded(allowUpgrade: true)
             }
             let inspected = try SQLiteConnection(path: inspectedURL.path, readOnly: true)
+            try rejectExecutableRestoreSchema(in: inspected)
+            try validateCanonicalRestoreSchema(in: inspected, workspace: folder)
             let integrity = try inspected.integrityCheck()
             guard integrity.lowercased() == "ok" else { throw LogbookRepositoryError.integrityCheckFailed(integrity) }
             let foreignKeyIssues = try foreignKeyIssueDescriptions(in: inspected)
@@ -2025,6 +2145,8 @@ public final class LogbookRepository {
         guard !plan.inspectedDigest.isEmpty, currentInspectedDigest == plan.inspectedDigest else { throw LogbookRepositoryError.stalePlan }
         let inspectedSnapshot: (digest: String, integrity: String, summary: LogbookSummary, version: Int, foreignKeys: [String], amendments: [String]) = try {
             let inspected = try SQLiteConnection(path: plan.inspectedDatabaseURL.path, readOnly: true)
+            try rejectExecutableRestoreSchema(in: inspected)
+            try validateCanonicalRestoreSchema(in: inspected, workspace: artifactRoot)
             return (
                 try canonicalFlightDigest(in: inspected),
                 try inspected.integrityCheck(),

@@ -44,7 +44,17 @@ public enum LogbookFormatters {
     }
 
     public static func csvEscape(_ value: String) -> String {
-        let escaped = value.replacingOccurrences(of: "\"", with: "\"\"")
+        let formulaTriggers = CharacterSet(charactersIn: "=+-@")
+        let firstEffectiveScalar = value.unicodeScalars.first { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar) && !CharacterSet.controlCharacters.contains(scalar)
+        }
+        let safeValue: String
+        if let firstEffectiveScalar, formulaTriggers.contains(firstEffectiveScalar) {
+            safeValue = "'" + value
+        } else {
+            safeValue = value
+        }
+        let escaped = safeValue.replacingOccurrences(of: "\"", with: "\"\"")
         if escaped.contains(",") || escaped.contains("\n") || escaped.contains("\"") {
             return "\"\(escaped)\""
         }

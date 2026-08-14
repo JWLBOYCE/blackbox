@@ -54,14 +54,27 @@ public enum FlightSuggestionEngine {
                 issues.append(.init(field: field, message: "Time exceeds total time.", guidance: "Review the literal values; Blackbox will not reduce them automatically.", severity: .error))
             }
         }
-        if flight.picDayMinutes + flight.picNightMinutes > flight.picMinutes {
-            issues.append(.init(field: "PIC split", message: "PIC day plus night exceeds PIC time.", guidance: "Review the entered split; Blackbox will not repair it.", severity: .error))
+        if flight.picMinutes > 0 && flight.picDayMinutes + flight.picNightMinutes != flight.picMinutes {
+            issues.append(.init(field: "PIC split", message: "PIC day plus night must equal PIC time.", guidance: "Allocate the complete PIC total between day and night before finalising.", severity: .error))
         }
-        if flight.picusDayMinutes + flight.picusNightMinutes > flight.picusMinutes {
-            issues.append(.init(field: "PICUS split", message: "PICUS day plus night exceeds PICUS time.", guidance: "Review the entered split; Blackbox will not repair it.", severity: .error))
+        if flight.picusMinutes > 0 && flight.picusDayMinutes + flight.picusNightMinutes != flight.picusMinutes {
+            issues.append(.init(field: "PICUS split", message: "PICUS day plus night must equal PICUS time.", guidance: "Allocate the complete PICUS total between day and night before finalising.", severity: .error))
         }
-        if flight.copilotDayMinutes + flight.copilotNightMinutes > flight.copilotMinutes {
-            issues.append(.init(field: "Co-pilot split", message: "Co-pilot day plus night exceeds co-pilot time.", guidance: "Review the entered split; Blackbox will not repair it.", severity: .error))
+        if flight.copilotMinutes > 0 && flight.copilotDayMinutes + flight.copilotNightMinutes != flight.copilotMinutes {
+            issues.append(.init(field: "Co-pilot split", message: "Co-pilot day plus night must equal co-pilot time.", guidance: "Allocate the complete co-pilot total between day and night before finalising.", severity: .error))
+        }
+        let selectedFunction = flight.pilotFunction.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let selectedRole: (field: String, total: Int, night: Int)? = switch selectedFunction {
+        case "pic", "pilot in command": ("PIC", flight.picMinutes, flight.picNightMinutes)
+        case "picus": ("PICUS", flight.picusMinutes, flight.picusNightMinutes)
+        case "co-pilot", "copilot", "sic": ("Co-pilot", flight.copilotMinutes, flight.copilotNightMinutes)
+        default: nil
+        }
+        if let selectedRole, flight.totalMinutes > 0, selectedRole.total != flight.totalMinutes {
+            issues.append(.init(field: "\(selectedRole.field) allocation", message: "Selected function time must equal total time.", guidance: "Allocate the complete sector total to the selected pilot function before finalising.", severity: .error))
+        }
+        if let selectedRole, selectedRole.total > 0, selectedRole.night != flight.nightMinutes {
+            issues.append(.init(field: "\(selectedRole.field) night", message: "Selected function night must equal recorded Night.", guidance: "Re-apply the function allocation after confirming the Night value.", severity: .error))
         }
         if simulator && flight.totalMinutes > 0 && flight.fstdMinutes == 0 {
             issues.append(.init(field: "FSTD", message: "A simulator entry has total time but no FSTD allocation.", guidance: "Enter the recorded FSTD value or retain the draft until it is known."))
@@ -179,11 +192,17 @@ public enum FlightSuggestionEngine {
         case .nightMinutes:
             if flight.nightMinutes == 0 { flight.nightMinutes = Int(suggestion.numericValue ?? 0) }
         case .picMinutes:
-            if roleValuesAreEmpty(flight) { flight.picMinutes = Int(suggestion.numericValue ?? 0) }
+            if roleValuesAreEmpty(flight) {
+                allocateRoleMinutes(Int(suggestion.numericValue ?? 0), to: .picMinutes, in: &flight)
+            }
         case .picusMinutes:
-            if roleValuesAreEmpty(flight) { flight.picusMinutes = Int(suggestion.numericValue ?? 0) }
+            if roleValuesAreEmpty(flight) {
+                allocateRoleMinutes(Int(suggestion.numericValue ?? 0), to: .picusMinutes, in: &flight)
+            }
         case .copilotMinutes:
-            if roleValuesAreEmpty(flight) { flight.copilotMinutes = Int(suggestion.numericValue ?? 0) }
+            if roleValuesAreEmpty(flight) {
+                allocateRoleMinutes(Int(suggestion.numericValue ?? 0), to: .copilotMinutes, in: &flight)
+            }
         case .dualMinutes:
             if roleValuesAreEmpty(flight) { flight.dualMinutes = Int(suggestion.numericValue ?? 0) }
         case .instructorMinutes:
@@ -215,8 +234,34 @@ public enum FlightSuggestionEngine {
     }
 
     private static func roleValuesAreEmpty(_ flight: FlightEntry) -> Bool {
-        [flight.picMinutes, flight.picusMinutes, flight.copilotMinutes, flight.dualMinutes, flight.instructorMinutes, flight.fstdMinutes]
+        [
+            flight.picMinutes, flight.picDayMinutes, flight.picNightMinutes,
+            flight.picusMinutes, flight.picusDayMinutes, flight.picusNightMinutes,
+            flight.copilotMinutes, flight.copilotDayMinutes, flight.copilotNightMinutes,
+            flight.dualMinutes, flight.instructorMinutes, flight.fstdMinutes
+        ]
             .allSatisfy { $0 == 0 }
+    }
+
+    private static func allocateRoleMinutes(_ total: Int, to field: FlightSuggestionField, in flight: inout FlightEntry) {
+        let night = min(max(flight.nightMinutes, 0), total)
+        let day = total - night
+        switch field {
+        case .picMinutes:
+            flight.picMinutes = total
+            flight.picDayMinutes = day
+            flight.picNightMinutes = night
+        case .picusMinutes:
+            flight.picusMinutes = total
+            flight.picusDayMinutes = day
+            flight.picusNightMinutes = night
+        case .copilotMinutes:
+            flight.copilotMinutes = total
+            flight.copilotDayMinutes = day
+            flight.copilotNightMinutes = night
+        default:
+            break
+        }
     }
 
     private static func nightAssessment(for flight: FlightEntry, departure: (latitude: Double, longitude: Double)?, arrival: (latitude: Double, longitude: Double)?) -> FlightSuggestion {
@@ -240,15 +285,27 @@ public enum FlightSuggestionEngine {
 
     private static func roleAssessment(for flight: FlightEntry) -> FlightSuggestion {
         let normalised = flight.pilotFunction.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let mapping: [String: FlightSuggestionField] = ["pic": .picMinutes, "pilot in command": .picMinutes, "co-pilot": .copilotMinutes, "copilot": .copilotMinutes, "sic": .copilotMinutes]
+        let mapping: [String: FlightSuggestionField] = [
+            "pic": .picMinutes,
+            "pilot in command": .picMinutes,
+            "picus": .picusMinutes,
+            "co-pilot": .copilotMinutes,
+            "copilot": .copilotMinutes,
+            "sic": .copilotMinutes
+        ]
         let inputs = ["Pilot function: \(flight.pilotFunction.isEmpty ? "Not entered" : flight.pilotFunction)", "Total time: \(flight.totalMinutes) minutes"]
         guard flight.entryKind != "Simulator", flight.totalMinutes > 0, let field = mapping[normalised] else {
-            return .init(field: .picMinutes, title: "Role allocation", explanation: "Only uniquely mapped PIC or co-pilot functions are eligible.", currentValue: "Entered role times retained", proposedValue: "Unavailable", inputs: inputs, method: "Exact pilot-function mapping", unavailableReason: "The function is missing, ambiguous, simulator-specific, or intentionally excluded (PICUS, instructor and dual are never inferred).")
+            return .init(field: .picMinutes, title: "Role allocation", explanation: "Only uniquely mapped PIC, PICUS or co-pilot functions are eligible.", currentValue: "Entered role times retained", proposedValue: "Unavailable", inputs: inputs, method: "Exact pilot-function mapping", unavailableReason: "The function is missing, ambiguous, simulator-specific, or intentionally excluded (instructor and dual are never inferred).")
         }
         guard roleValuesAreEmpty(flight) else {
             return .init(field: field, title: "Role allocation", explanation: "Existing role values are pilot-entered facts.", currentValue: "Entered role times retained", proposedValue: "Unavailable", inputs: inputs, method: "Exact pilot-function mapping", unavailableReason: "At least one role value is non-zero, so Blackbox will not overwrite or add an allocation.")
         }
-        let title = field == .picMinutes ? "PIC allocation" : "Co-pilot allocation"
-        return .init(field: field, title: title, explanation: "The entered function maps uniquely to this role; acceptance is required.", currentValue: "0 min", proposedValue: "\(flight.totalMinutes) min", numericValue: Double(flight.totalMinutes), inputs: inputs, method: "Exact pilot-function mapping", confidence: "High")
+        let title: String
+        switch field {
+        case .picMinutes: title = "PIC allocation"
+        case .picusMinutes: title = "PICUS allocation"
+        default: title = "Co-pilot allocation"
+        }
+        return .init(field: field, title: title, explanation: "The entered function maps uniquely to this role. Acceptance allocates the role total and its day/night split from the recorded Night value.", currentValue: "0 min", proposedValue: "\(flight.totalMinutes) min", numericValue: Double(flight.totalMinutes), inputs: inputs, method: "Exact pilot-function mapping with explicit day/night split", confidence: "High")
     }
 }

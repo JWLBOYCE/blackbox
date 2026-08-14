@@ -95,6 +95,9 @@ struct ReportsView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 420)
                     .accessibilityIdentifier("reports.field.backup-passphrase")
+                Text("New backups require at least 12 characters. Existing legacy backups can still be restored with their original passphrase.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack(spacing: 12) {
                     Button {
                         store.createEncryptedBackup()
@@ -102,7 +105,7 @@ struct ReportsView: View {
                         Label("Create Encrypted Backup", systemImage: "lock.doc")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.backupPassphrase.isEmpty)
+                    .disabled(store.backupPassphrase.count < 12)
                     .accessibilityIdentifier("reports.createBackup")
 
                     Button {
@@ -111,7 +114,7 @@ struct ReportsView: View {
                         Label("Choose Backup Folder", systemImage: "folder.badge.plus")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(store.backupPassphrase.isEmpty)
+                    .disabled(store.backupPassphrase.count < 12)
 
                     Button {
                         showRestoreImporter = true
@@ -155,7 +158,7 @@ struct ReportsView: View {
                         Text("Applying this preview creates and verifies a recovery point, atomically replaces the database, and rolls back on failure.")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("Cancel Preview") { store.pendingRestorePlan = nil }.buttonStyle(.bordered)
+                            Button("Cancel Preview", action: store.cancelPendingRestore).buttonStyle(.bordered)
                             Button("Restore Verified Backup", action: store.applyPendingRestore)
                                 .buttonStyle(.borderedProminent)
                                 .accessibilityIdentifier("reports.applyRestore")

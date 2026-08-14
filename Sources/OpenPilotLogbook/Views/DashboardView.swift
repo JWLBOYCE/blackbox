@@ -50,6 +50,8 @@ struct DashboardView: View {
     private var metrics: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
             MetricTile(title: "Total", value: LogbookFormatters.hours(store.summary.totalMinutes), systemImage: "clock", tint: OpenPilotTheme.cyan)
+            MetricTile(title: "FSTD", value: LogbookFormatters.hours(store.summary.fstdMinutes), systemImage: "rectangle.inset.filled", tint: OpenPilotTheme.blue)
+                .accessibilityIdentifier("dashboard.metric.fstd")
             MetricTile(title: "Last 12 Months", value: LogbookFormatters.hours(store.recency.hoursLast12Months), systemImage: "calendar.badge.clock", tint: OpenPilotTheme.green)
             MetricTile(title: "90 Day Landings", value: "\(store.recency.landingsLast90Days)", systemImage: "arrow.down.to.line", tint: OpenPilotTheme.green)
             MetricTile(title: "Last Landing", value: store.recency.daysSinceLastLanding.map { "\($0)d ago" } ?? "None", systemImage: "airplane.arrival", tint: OpenPilotTheme.blue)
