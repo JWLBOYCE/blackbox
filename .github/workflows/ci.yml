@@ -5,29 +5,955 @@ on:
   push:
     branches: [main]
 
+permissions:
+  actions: read
+  contents: read
+
+env:
+  BLACKBOX_XCODE_VERSION: Xcode 26.6
+  BLACKBOX_XCODE_BUILD: 17F113
+  BLACKBOX_SOURCE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  BLACKBOX_PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+  BLACKBOX_PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+  BLACKBOX_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+  BLACKBOX_PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+  BLACKBOX_PR_NUMBER: ${{ github.event.number || '' }}
+
 jobs:
-  build-and-test:
-    runs-on: macos-15
+  core-gates:
+    name: Core build, tests, smoke, and snapshots
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    outputs:
+      verify_source_outcome: ${{ steps.verify_source.outcome }}
+      verify_xcode_outcome: ${{ steps.verify_xcode.outcome }}
+      build_outcome: ${{ steps.build.outcome }}
+      unit_tests_outcome: ${{ steps.unit_tests.outcome }}
+      swiftpm_tests_outcome: ${{ steps.swiftpm_tests.outcome }}
+      performance_outcome: ${{ steps.performance.outcome }}
+      smoke_outcome: ${{ steps.smoke.outcome }}
+      snapshots_outcome: ${{ steps.snapshots.outcome }}
+      snapshot_artifact_outcome: ${{ steps.snapshot_artifact.outcome }}
+      snapshot_artifact_digest: ${{ steps.snapshot_artifact.outputs.artifact-digest }}
+      ui_matrix_outcome: ${{ steps.ui_matrix.outcome }}
+      privacy_outcome: ${{ steps.privacy.outcome }}
+      repository_hygiene_outcome: ${{ steps.repository_hygiene.outcome }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.BLACKBOX_SOURCE_COMMIT }}
+
+      - name: Verify checked-out source commit
+        id: verify_source
+        run: test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
+
+      - name: Verify pinned Xcode
+        id: verify_xcode
+        run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          test "$(xcodebuild -version | sed -n '1p')" = "$BLACKBOX_XCODE_VERSION"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version $BLACKBOX_XCODE_BUILD"
 
       - name: Build
+        id: build
         run: swift build
 
       - name: Unit tests
+        id: unit_tests
         run: swift run OpenPilotLogbookCoreUnitTests
 
+      - name: SwiftPM test suite
+        id: swiftpm_tests
+        run: swift test
+
+      - name: Release performance gates
+        id: performance
+        run: swift test -c release --filter fixedFixtureReleasePerformanceGates
+
       - name: Smoke tests
+        id: smoke
         run: swift run OpenPilotLogbookCoreSmokeTests
 
       - name: In-app snapshot checker
+        id: snapshots
         run: ./script/build_and_run.sh --check
 
+      - name: Preserve principal-screen snapshot matrix
+        id: snapshot_artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-principal-screen-snapshots
+          path: outputs/check/*.png
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify Xcode UI test matrices
+        id: ui_matrix
+        if: ${{ hashFiles('Blackbox.xcodeproj/project.pbxproj') != '' }}
+        run: |
+          set -euo pipefail
+          plutil -convert xml1 -o /dev/null Blackbox.xctestplan
+          plutil -convert xml1 -o /dev/null BlackboxAccessibility.xctestplan
+          xmllint --noout Blackbox.xcodeproj/xcshareddata/xcschemes/Blackbox.xcscheme
+
+          test "$(grep -Ec '^      \"id\" : ' Blackbox.xctestplan)" -eq 4
+          test "$(grep -Ec '^      \"id\" : ' BlackboxAccessibility.xctestplan)" -eq 3
+          test "$(grep -Ec '^    func test[A-Za-z0-9_]+\(' UITests/BlackboxUITests.swift)" -eq 13
+          test "$(grep -Fc '$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)' Blackbox.xctestplan)" -eq 4
+          test "$(grep -Fc '$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)' BlackboxAccessibility.xctestplan)" -eq 3
+
+          for configuration in 'Light Regular' 'Light Compact' 'Dark Regular' 'Dark Compact'; do
+            grep -Fq "\"name\" : \"$configuration\"" Blackbox.xctestplan
+          done
+          for configuration in 'Increase Contrast Regular' 'Increase Contrast Compact' 'Large Text Reduced Motion'; do
+            grep -Fq "\"name\" : \"$configuration\"" BlackboxAccessibility.xctestplan
+          done
+          ! grep -Eq 'Increase Contrast|Large Text Reduced Motion' Blackbox.xctestplan
+          grep -Fq 'container:BlackboxAccessibility.xctestplan' Blackbox.xcodeproj/xcshareddata/xcschemes/Blackbox.xcscheme
+
       - name: Private data guard
+        id: privacy
         run: |
           ! git ls-files \
             | grep -Ev '^Sources/OpenPilotLogbookCore/Resources/airports\.csv$' \
             | grep -Ev '^Sources/CSQLite/module\.modulemap$' \
             | grep -Ev '^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\.swift$' \
             | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
+
+      - name: Repository hygiene
+        id: repository_hygiene
+        run: |
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+  ui-tests:
+    name: UI ${{ matrix.configuration }}
+    needs: core-gates
+    runs-on: macos-26
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: Light Regular
+            slug: Light-Regular
+            artifact: Blackbox-XCUITest-Light-Regular
+          - configuration: Light Compact
+            slug: Light-Compact
+            artifact: Blackbox-XCUITest-Light-Compact
+          - configuration: Dark Regular
+            slug: Dark-Regular
+            artifact: Blackbox-XCUITest-Dark-Regular
+          - configuration: Dark Compact
+            slug: Dark-Compact
+            artifact: Blackbox-XCUITest-Dark-Compact
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      BLACKBOX_TEST_CONFIGURATION: ${{ matrix.configuration }}
+      BLACKBOX_SHARD_SLUG: ${{ matrix.slug }}
+      BLACKBOX_EVIDENCE_ARTIFACT: ${{ matrix.artifact }}
+    steps:
+      - name: Check out exact tested source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.BLACKBOX_SOURCE_COMMIT }}
+
+      - name: Verify source and exact Xcode
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
+          test -d "$DEVELOPER_DIR"
+          test "$(xcodebuild -version | sed -n '1p')" = "$BLACKBOX_XCODE_VERSION"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version $BLACKBOX_XCODE_BUILD"
+          grep -Fq "\"name\" : \"$BLACKBOX_TEST_CONFIGURATION\"" Blackbox.xctestplan
+
+      - name: Run all thirteen workflows in this configuration
+        id: ui_tests
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/$BLACKBOX_EVIDENCE_ARTIFACT"
+          test ! -e "$evidence_dir"
+          mkdir -p "$evidence_dir"
+
+          xcodebuild test \
+            -project Blackbox.xcodeproj \
+            -scheme Blackbox \
+            -testPlan Blackbox \
+            -only-test-configuration "$BLACKBOX_TEST_CONFIGURATION" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 180 \
+            -maximum-test-execution-time-allowance 300 \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/Blackbox-DerivedData-$BLACKBOX_SHARD_SLUG" \
+            -resultBundlePath "$evidence_dir/BlackboxUITests-$BLACKBOX_SHARD_SLUG.xcresult" \
+            2>&1 | tee "$evidence_dir/Blackbox-XCUITest-$BLACKBOX_SHARD_SLUG-console.log"
+
+      - name: Write immutable UI shard evidence manifest
+        id: ui_manifest
+        if: ${{ always() }}
+        env:
+          TEST_OUTCOME: ${{ steps.ui_tests.outcome }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/$BLACKBOX_EVIDENCE_ARTIFACT"
+          result_name="BlackboxUITests-$BLACKBOX_SHARD_SLUG.xcresult"
+          log_name="Blackbox-XCUITest-$BLACKBOX_SHARD_SLUG-console.log"
+          manifest="$evidence_dir/$BLACKBOX_EVIDENCE_ARTIFACT.evidence.plist"
+          mkdir -p "$evidence_dir"
+
+          log_sha256=unavailable
+          result_tree_sha256=unavailable
+          if test -s "$evidence_dir/$log_name"; then
+            log_sha256="$(shasum -a 256 "$evidence_dir/$log_name" | awk '{print $1}')"
+          fi
+          if test -d "$evidence_dir/$result_name"; then
+            result_tree_sha256="$(cd "$evidence_dir/$result_name" && \
+              find . -type f -print0 | sort -z | xargs -0 shasum -a 256 \
+                | shasum -a 256 | awk '{print $1}')"
+          fi
+
+          plutil -create xml1 "$manifest"
+          plutil -insert evidenceSchema -integer 1 "$manifest"
+          plutil -insert suite -string full-workflow "$manifest"
+          plutil -insert testPlan -string Blackbox "$manifest"
+          plutil -insert configuration -string "$BLACKBOX_TEST_CONFIGURATION" "$manifest"
+          plutil -insert shardSlug -string "$BLACKBOX_SHARD_SLUG" "$manifest"
+          plutil -insert artifactName -string "$BLACKBOX_EVIDENCE_ARTIFACT" "$manifest"
+          plutil -insert expectedTestMethods -integer 13 "$manifest"
+          plutil -insert testConfigurationCount -integer 1 "$manifest"
+          plutil -insert testOutcome -string "$TEST_OUTCOME" "$manifest"
+          plutil -insert sourceCommit -string "$BLACKBOX_SOURCE_COMMIT" "$manifest"
+          plutil -insert repository -string "$GITHUB_REPOSITORY" "$manifest"
+          plutil -insert runID -string "$GITHUB_RUN_ID" "$manifest"
+          plutil -insert runAttempt -string "$GITHUB_RUN_ATTEMPT" "$manifest"
+          plutil -insert xcodeVersion -string "$BLACKBOX_XCODE_VERSION" "$manifest"
+          plutil -insert xcodeBuild -string "$BLACKBOX_XCODE_BUILD" "$manifest"
+          plutil -insert dataPolicy -string synthetic-temporary-roots-only "$manifest"
+          plutil -insert resultBundleName -string "$result_name" "$manifest"
+          plutil -insert resultBundleTreeSHA256 -string "$result_tree_sha256" "$manifest"
+          plutil -insert consoleLogName -string "$log_name" "$manifest"
+          plutil -insert consoleLogSHA256 -string "$log_sha256" "$manifest"
+          plutil -convert json -r -o "$evidence_dir/$BLACKBOX_EVIDENCE_ARTIFACT.evidence.json" "$manifest"
+
+      - name: Require complete UI shard evidence
+        if: ${{ always() }}
+        run: |
+          evidence_dir="$RUNNER_TEMP/$BLACKBOX_EVIDENCE_ARTIFACT"
+          test -d "$evidence_dir/BlackboxUITests-$BLACKBOX_SHARD_SLUG.xcresult"
+          test -s "$evidence_dir/Blackbox-XCUITest-$BLACKBOX_SHARD_SLUG-console.log"
+          plutil -lint "$evidence_dir/$BLACKBOX_EVIDENCE_ARTIFACT.evidence.plist"
+
+      - name: Preserve immutable UI shard evidence
+        id: ui_artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/${{ matrix.artifact }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require immutable UI artifact digest
+        if: ${{ always() }}
+        env:
+          ARTIFACT_DIGEST: ${{ steps.ui_artifact.outputs.artifact-digest }}
+        run: test "$ARTIFACT_DIGEST" != ""
+
+  accessibility-tests:
+    name: Accessibility UI ${{ matrix.configuration }}
+    needs: core-gates
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: Increase Contrast Regular
+            slug: Increase-Contrast-Regular
+            artifact: Blackbox-Accessibility-XCUITest-Increase-Contrast-Regular
+          - configuration: Increase Contrast Compact
+            slug: Increase-Contrast-Compact
+            artifact: Blackbox-Accessibility-XCUITest-Increase-Contrast-Compact
+          - configuration: Large Text Reduced Motion
+            slug: Large-Text-Reduced-Motion
+            artifact: Blackbox-Accessibility-XCUITest-Large-Text-Reduced-Motion
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      BLACKBOX_TEST_CONFIGURATION: ${{ matrix.configuration }}
+      BLACKBOX_SHARD_SLUG: ${{ matrix.slug }}
+      BLACKBOX_EVIDENCE_ARTIFACT: ${{ matrix.artifact }}
+    steps:
+      - name: Check out exact tested source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.BLACKBOX_SOURCE_COMMIT }}
+
+      - name: Verify source and exact Xcode
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
+          test -d "$DEVELOPER_DIR"
+          test "$(xcodebuild -version | sed -n '1p')" = "$BLACKBOX_XCODE_VERSION"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version $BLACKBOX_XCODE_BUILD"
+          grep -Fq "\"name\" : \"$BLACKBOX_TEST_CONFIGURATION\"" BlackboxAccessibility.xctestplan
+
+      - name: Run the focused workflow in this accessibility configuration
+        id: accessibility_ui_tests
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/$BLACKBOX_EVIDENCE_ARTIFACT"
+          test ! -e "$evidence_dir"
+          mkdir -p "$evidence_dir"
+
+          xcodebuild test \
+            -project Blackbox.xcodeproj \
+            -scheme Blackbox \
+            -testPlan BlackboxAccessibility \
+            -only-test-configuration "$BLACKBOX_TEST_CONFIGURATION" \
+            -only-testing:BlackboxUITests/BlackboxUITests/testKeyboardShortcutsAndConfiguredWindowSize \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 180 \
+            -maximum-test-execution-time-allowance 300 \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/Blackbox-DerivedData-$BLACKBOX_SHARD_SLUG" \
+            -resultBundlePath "$evidence_dir/BlackboxAccessibilityUITests-$BLACKBOX_SHARD_SLUG.xcresult" \
+            2>&1 | tee "$evidence_dir/Blackbox-Accessibility-XCUITest-$BLACKBOX_SHARD_SLUG-console.log"
+
+      - name: Write immutable accessibility shard evidence manifest
+        id: accessibility_manifest
+        if: ${{ always() }}
+        env:
+          TEST_OUTCOME: ${{ steps.accessibility_ui_tests.outcome }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/$BLACKBOX_EVIDENCE_ARTIFACT"
+          result_name="BlackboxAccessibilityUITests-$BLACKBOX_SHARD_SLUG.xcresult"
+          log_name="Blackbox-Accessibility-XCUITest-$BLACKBOX_SHARD_SLUG-console.log"
+          manifest="$evidence_dir/$BLACKBOX_EVIDENCE_ARTIFACT.evidence.plist"
+          mkdir -p "$evidence_dir"
+
+          log_sha256=unavailable
+          result_tree_sha256=unavailable
+          if test -s "$evidence_dir/$log_name"; then
+            log_sha256="$(shasum -a 256 "$evidence_dir/$log_name" | awk '{print $1}')"
+          fi
+          if test -d "$evidence_dir/$result_name"; then
+            result_tree_sha256="$(cd "$evidence_dir/$result_name" && \
+              find . -type f -print0 | sort -z | xargs -0 shasum -a 256 \
+                | shasum -a 256 | awk '{print $1}')"
+          fi
+
+          plutil -create xml1 "$manifest"
+          plutil -insert evidenceSchema -integer 1 "$manifest"
+          plutil -insert suite -string focused-accessibility "$manifest"
+          plutil -insert testPlan -string BlackboxAccessibility "$manifest"
+          plutil -insert configuration -string "$BLACKBOX_TEST_CONFIGURATION" "$manifest"
+          plutil -insert shardSlug -string "$BLACKBOX_SHARD_SLUG" "$manifest"
+          plutil -insert artifactName -string "$BLACKBOX_EVIDENCE_ARTIFACT" "$manifest"
+          plutil -insert expectedTestMethods -integer 1 "$manifest"
+          plutil -insert testConfigurationCount -integer 1 "$manifest"
+          plutil -insert testOutcome -string "$TEST_OUTCOME" "$manifest"
+          plutil -insert sourceCommit -string "$BLACKBOX_SOURCE_COMMIT" "$manifest"
+          plutil -insert repository -string "$GITHUB_REPOSITORY" "$manifest"
+          plutil -insert runID -string "$GITHUB_RUN_ID" "$manifest"
+          plutil -insert runAttempt -string "$GITHUB_RUN_ATTEMPT" "$manifest"
+          plutil -insert xcodeVersion -string "$BLACKBOX_XCODE_VERSION" "$manifest"
+          plutil -insert xcodeBuild -string "$BLACKBOX_XCODE_BUILD" "$manifest"
+          plutil -insert dataPolicy -string synthetic-temporary-roots-only "$manifest"
+          plutil -insert resultBundleName -string "$result_name" "$manifest"
+          plutil -insert resultBundleTreeSHA256 -string "$result_tree_sha256" "$manifest"
+          plutil -insert consoleLogName -string "$log_name" "$manifest"
+          plutil -insert consoleLogSHA256 -string "$log_sha256" "$manifest"
+          plutil -convert json -r -o "$evidence_dir/$BLACKBOX_EVIDENCE_ARTIFACT.evidence.json" "$manifest"
+
+      - name: Require complete accessibility shard evidence
+        if: ${{ always() }}
+        run: |
+          evidence_dir="$RUNNER_TEMP/$BLACKBOX_EVIDENCE_ARTIFACT"
+          test -d "$evidence_dir/BlackboxAccessibilityUITests-$BLACKBOX_SHARD_SLUG.xcresult"
+          test -s "$evidence_dir/Blackbox-Accessibility-XCUITest-$BLACKBOX_SHARD_SLUG-console.log"
+          plutil -lint "$evidence_dir/$BLACKBOX_EVIDENCE_ARTIFACT.evidence.plist"
+
+      - name: Preserve immutable accessibility shard evidence
+        id: accessibility_artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/${{ matrix.artifact }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require immutable accessibility artifact digest
+        if: ${{ always() }}
+        env:
+          ARTIFACT_DIGEST: ${{ steps.accessibility_artifact.outputs.artifact-digest }}
+        run: test "$ARTIFACT_DIGEST" != ""
+
+  release-evidence:
+    name: Aggregate evidence and unsigned release input
+    if: ${{ always() }}
+    needs:
+      - core-gates
+      - ui-tests
+      - accessibility-tests
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      CORE_JOB_RESULT: ${{ needs.core-gates.result }}
+      UI_JOB_RESULT: ${{ needs.ui-tests.result }}
+      ACCESSIBILITY_JOB_RESULT: ${{ needs.accessibility-tests.result }}
+    steps:
+      - name: Check out exact tested source
+        id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.BLACKBOX_SOURCE_COMMIT }}
+
+      - name: Verify aggregate source commit
+        id: verify_source
+        continue-on-error: true
+        run: test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
+
+      - name: Verify aggregate pinned Xcode
+        id: verify_xcode
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          test "$(xcodebuild -version | sed -n '1p')" = "$BLACKBOX_XCODE_VERSION"
+          test "$(xcodebuild -version | sed -n '2p')" = "Build version $BLACKBOX_XCODE_BUILD"
+
+      - name: Determine release-input eligibility
+        id: eligibility
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          eligible=no
+          if test "$REPOSITORY" = 'JWLBOYCE/blackbox' \
+            && test "$EVENT_NAME" = push \
+            && test "$REF_NAME" = 'refs/heads/main'; then
+            eligible=yes
+          fi
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+
+      - name: Download principal-screen evidence
+        id: download_snapshots
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Blackbox-principal-screen-snapshots
+          path: ${{ runner.temp }}/Blackbox-aggregate-evidence/snapshots
+
+      - name: Download four full-workflow UI shards
+        id: download_ui
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: Blackbox-XCUITest-*
+          path: ${{ runner.temp }}/Blackbox-aggregate-evidence/ui
+          merge-multiple: false
+
+      - name: Download three accessibility UI shards
+        id: download_accessibility
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: Blackbox-Accessibility-XCUITest-*
+          path: ${{ runner.temp }}/Blackbox-aggregate-evidence/accessibility
+          merge-multiple: false
+
+      - name: Verify all seven immutable UI evidence shards
+        id: evidence_validation
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          evidence_root="$RUNNER_TEMP/Blackbox-aggregate-evidence"
+          digest_plist="$evidence_root/Blackbox-evidence-artifact-digests.plist"
+          artifact_api="$evidence_root/Blackbox-run-artifacts.json"
+          mkdir -p "$evidence_root"
+
+          snapshot_count="$(find "$evidence_root/snapshots" -type f -name '*.png' | wc -l | tr -d ' ')"
+          test "$snapshot_count" -eq 72
+          snapshot_tree_sha256="$(cd "$evidence_root/snapshots" && \
+            find . -type f -name '*.png' -print0 | sort -z | xargs -0 shasum -a 256 \
+              | shasum -a 256 | awk '{print $1}')"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$artifact_api"
+          plutil -create xml1 "$digest_plist"
+          plutil -insert evidenceSchema -integer 1 "$digest_plist"
+          plutil -insert sourceCommit -string "$BLACKBOX_SOURCE_COMMIT" "$digest_plist"
+          plutil -insert runID -string "$GITHUB_RUN_ID" "$digest_plist"
+          plutil -insert snapshotCount -integer "$snapshot_count" "$digest_plist"
+          plutil -insert snapshotTreeSHA256 -string "$snapshot_tree_sha256" "$digest_plist"
+          plutil -insert artifactDigests -dictionary "$digest_plist"
+
+          artifact_digest() {
+            local artifact_name="$1"
+            local match_count
+            local digest
+            match_count="$(jq --arg name "$artifact_name" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' "$artifact_api")"
+            test "$match_count" -eq 1
+            digest="$(jq -r --arg name "$artifact_name" \
+              '.artifacts[] | select(.name == $name and .expired == false) | .digest' "$artifact_api")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            printf '%s\n' "$digest"
+          }
+
+          validate_shard() {
+            local collection="$1"
+            local artifact_name="$2"
+            local suite="$3"
+            local test_plan="$4"
+            local configuration="$5"
+            local expected_methods="$6"
+            local artifact_dir="$evidence_root/$collection/$artifact_name"
+            local manifest
+            local evidence_dir
+            local result_name
+            local log_name
+            local result_tree_sha256
+            local log_sha256
+            local digest_key
+            local digest
+
+            test -d "$artifact_dir"
+            manifest="$(find "$artifact_dir" -type f -name "$artifact_name.evidence.plist" -print -quit)"
+            test -n "$manifest"
+            plutil -lint "$manifest" >/dev/null
+            evidence_dir="$(dirname "$manifest")"
+
+            test "$(plutil -extract evidenceSchema raw -o - "$manifest")" = 1
+            test "$(plutil -extract suite raw -o - "$manifest")" = "$suite"
+            test "$(plutil -extract testPlan raw -o - "$manifest")" = "$test_plan"
+            test "$(plutil -extract configuration raw -o - "$manifest")" = "$configuration"
+            test "$(plutil -extract artifactName raw -o - "$manifest")" = "$artifact_name"
+            test "$(plutil -extract expectedTestMethods raw -o - "$manifest")" = "$expected_methods"
+            test "$(plutil -extract testConfigurationCount raw -o - "$manifest")" = 1
+            test "$(plutil -extract testOutcome raw -o - "$manifest")" = success
+            test "$(plutil -extract sourceCommit raw -o - "$manifest")" = "$BLACKBOX_SOURCE_COMMIT"
+            test "$(plutil -extract repository raw -o - "$manifest")" = "$GITHUB_REPOSITORY"
+            test "$(plutil -extract runID raw -o - "$manifest")" = "$GITHUB_RUN_ID"
+            test "$(plutil -extract runAttempt raw -o - "$manifest")" = "$GITHUB_RUN_ATTEMPT"
+            test "$(plutil -extract xcodeVersion raw -o - "$manifest")" = "$BLACKBOX_XCODE_VERSION"
+            test "$(plutil -extract xcodeBuild raw -o - "$manifest")" = "$BLACKBOX_XCODE_BUILD"
+            test "$(plutil -extract dataPolicy raw -o - "$manifest")" = synthetic-temporary-roots-only
+
+            result_name="$(plutil -extract resultBundleName raw -o - "$manifest")"
+            log_name="$(plutil -extract consoleLogName raw -o - "$manifest")"
+            test -d "$evidence_dir/$result_name"
+            test -s "$evidence_dir/$log_name"
+            result_tree_sha256="$(cd "$evidence_dir/$result_name" && \
+              find . -type f -print0 | sort -z | xargs -0 shasum -a 256 \
+                | shasum -a 256 | awk '{print $1}')"
+            log_sha256="$(shasum -a 256 "$evidence_dir/$log_name" | awk '{print $1}')"
+            test "$result_tree_sha256" = "$(plutil -extract resultBundleTreeSHA256 raw -o - "$manifest")"
+            test "$log_sha256" = "$(plutil -extract consoleLogSHA256 raw -o - "$manifest")"
+
+            digest="$(artifact_digest "$artifact_name")"
+            digest_key="$(printf '%s' "$artifact_name" | sed 's/^Blackbox-//' | tr '-' '_')"
+            plutil -insert "artifactDigests.$digest_key" -string "$digest" "$digest_plist"
+          }
+
+          snapshot_digest="$(artifact_digest Blackbox-principal-screen-snapshots)"
+          plutil -insert artifactDigests.principal_screen_snapshots -string "$snapshot_digest" "$digest_plist"
+
+          validate_shard ui Blackbox-XCUITest-Light-Regular \
+            full-workflow Blackbox 'Light Regular' 13
+          validate_shard ui Blackbox-XCUITest-Light-Compact \
+            full-workflow Blackbox 'Light Compact' 13
+          validate_shard ui Blackbox-XCUITest-Dark-Regular \
+            full-workflow Blackbox 'Dark Regular' 13
+          validate_shard ui Blackbox-XCUITest-Dark-Compact \
+            full-workflow Blackbox 'Dark Compact' 13
+          validate_shard accessibility Blackbox-Accessibility-XCUITest-Increase-Contrast-Regular \
+            focused-accessibility BlackboxAccessibility 'Increase Contrast Regular' 1
+          validate_shard accessibility Blackbox-Accessibility-XCUITest-Increase-Contrast-Compact \
+            focused-accessibility BlackboxAccessibility 'Increase Contrast Compact' 1
+          validate_shard accessibility Blackbox-Accessibility-XCUITest-Large-Text-Reduced-Motion \
+            focused-accessibility BlackboxAccessibility 'Large Text Reduced Motion' 1
+
+          test "$(plutil -extract artifactDigests json -o - "$digest_plist" | jq 'length')" -eq 8
+          echo "snapshot_count=$snapshot_count" >> "$GITHUB_OUTPUT"
+          echo "snapshot_tree_sha256=$snapshot_tree_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck release checkout privacy and hygiene
+        id: release_hygiene
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ! git ls-files \
+            | grep -Ev '^Sources/OpenPilotLogbookCore/Resources/airports\.csv$' \
+            | grep -Ev '^Sources/CSQLite/module\.modulemap$' \
+            | grep -Ev '^Sources/OpenPilotLogbookCore/Services/SQLiteConnection\.swift$' \
+            | grep -Ei '(sqlite|\.db$|\.sql$|LogTenCoreDataStore|OpenPilotLogbook\.sqlite|roster|\.pdf$|\.csv$)'
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Build unsigned Universal 2 release archive
+        id: archive
+        if: >-
+          ${{
+            needs.core-gates.result == 'success' &&
+            needs.ui-tests.result == 'success' &&
+            needs.accessibility-tests.result == 'success' &&
+            steps.verify_source.outcome == 'success' &&
+            steps.verify_xcode.outcome == 'success' &&
+            steps.evidence_validation.outcome == 'success' &&
+            steps.release_hygiene.outcome == 'success' &&
+            steps.eligibility.outputs.eligible == 'yes'
+          }}
+        run: |
+          set -euo pipefail
+
+          archive_path="$RUNNER_TEMP/Blackbox-Unsigned.xcarchive"
+          archive_zip="$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip"
+          manifest_plist="$RUNNER_TEMP/Blackbox-unsigned-universal2.manifest.plist"
+          manifest_json="$RUNNER_TEMP/Blackbox-unsigned-universal2.manifest.json"
+          evidence_digests="$RUNNER_TEMP/Blackbox-aggregate-evidence/Blackbox-evidence-artifact-digests.plist"
+          metadata_plist="$GITHUB_WORKSPACE/Config/ReleaseMetadata.plist"
+          test ! -e "$archive_path"
+          test ! -e "$archive_zip"
+          plutil -lint "$metadata_plist" "$evidence_digests"
+          product="$(plutil -extract ProductName raw -o - "$metadata_plist")"
+          bundle_identifier="$(plutil -extract BundleIdentifier raw -o - "$metadata_plist")"
+          version="$(plutil -extract Version raw -o - "$metadata_plist")"
+          build="$(plutil -extract Build raw -o - "$metadata_plist")"
+          minimum_system_version="$(plutil -extract MinimumSystemVersion raw -o - "$metadata_plist")"
+          test "$product" = Blackbox
+          test "$bundle_identifier" = uk.co.blackbox.logbook
+          test "$version" = 1.0.0
+          test "$build" = 1
+          test "$minimum_system_version" = 14.0
+          test "$(git rev-parse HEAD)" = "$BLACKBOX_SOURCE_COMMIT"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          xcodebuild archive \
+            -project Blackbox.xcodeproj \
+            -scheme Blackbox \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$archive_path" \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+          app_path="$archive_path/Products/Applications/Blackbox.app"
+          info_plist="$app_path/Contents/Info.plist"
+          executable_name="$(plutil -extract CFBundleExecutable raw -o - "$info_plist")"
+          executable_path="$app_path/Contents/MacOS/$executable_name"
+          test -x "$executable_path"
+
+          while IFS= read -r -d '' candidate; do
+            case "$(file -b "$candidate")" in
+              *Mach-O*)
+                if codesign --display "$candidate" >/dev/null 2>&1; then
+                  codesign --remove-signature "$candidate"
+                fi
+                ;;
+            esac
+          done < <(find "$app_path" -type f -print0)
+
+          architectures="$(lipo -archs "$executable_path")"
+          architecture_count=0
+          has_arm64=0
+          has_x86_64=0
+          for architecture in $architectures; do
+            architecture_count=$((architecture_count + 1))
+            test "$architecture" != arm64 || has_arm64=1
+            test "$architecture" != x86_64 || has_x86_64=1
+          done
+          test "$architecture_count" -eq 2
+          test "$has_arm64" -eq 1
+          test "$has_x86_64" -eq 1
+
+          /bin/bash script/verify_release_input.sh --app "$app_path" --require-unsigned
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$info_plist")" = "$bundle_identifier"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$info_plist")" = "$version"
+          test "$(plutil -extract CFBundleVersion raw -o - "$info_plist")" = "$build"
+          /bin/bash script/release_privacy_scan.sh --repository "$GITHUB_WORKSPACE" --app "$app_path"
+
+          ditto -c -k --sequesterRsrc --keepParent "$archive_path" "$archive_zip"
+          archive_sha256="$(shasum -a 256 "$archive_zip" | awk '{print $1}')"
+          archive_bytes="$(stat -f '%z' "$archive_zip")"
+          evidence_index_sha256="$(shasum -a 256 "$evidence_digests" | awk '{print $1}')"
+          evidence_index_bytes="$(stat -f '%z' "$evidence_digests")"
+
+          plutil -create xml1 "$manifest_plist"
+          plutil -insert product -string "$product" "$manifest_plist"
+          plutil -insert bundleIdentifier -string "$bundle_identifier" "$manifest_plist"
+          plutil -insert version -string "$version" "$manifest_plist"
+          plutil -insert build -string "$build" "$manifest_plist"
+          plutil -insert minimumSystemVersion -string "$minimum_system_version" "$manifest_plist"
+          plutil -insert architectures -json '["arm64","x86_64"]' "$manifest_plist"
+          plutil -insert sourceCommit -string "$BLACKBOX_SOURCE_COMMIT" "$manifest_plist"
+          plutil -insert repository -string "$GITHUB_REPOSITORY" "$manifest_plist"
+          plutil -insert workflow -string "$GITHUB_WORKFLOW" "$manifest_plist"
+          plutil -insert workflowRef -string "$GITHUB_WORKFLOW_REF" "$manifest_plist"
+          plutil -insert eventName -string "$GITHUB_EVENT_NAME" "$manifest_plist"
+          plutil -insert sourceRef -string "$GITHUB_REF" "$manifest_plist"
+          plutil -insert headRepository -string "$BLACKBOX_PR_HEAD_REPOSITORY" "$manifest_plist"
+          plutil -insert headRef -string "$BLACKBOX_PR_HEAD_REF" "$manifest_plist"
+          plutil -insert headSHA -string "$BLACKBOX_PR_HEAD_SHA" "$manifest_plist"
+          plutil -insert baseRef -string "$BLACKBOX_PR_BASE_REF" "$manifest_plist"
+          plutil -insert pullRequestNumber -string "$BLACKBOX_PR_NUMBER" "$manifest_plist"
+          plutil -insert runID -string "$GITHUB_RUN_ID" "$manifest_plist"
+          plutil -insert runAttempt -string "$GITHUB_RUN_ATTEMPT" "$manifest_plist"
+          plutil -insert xcodeVersion -string "$(xcodebuild -version | sed -n '1p')" "$manifest_plist"
+          plutil -insert xcodeBuild -string "$(xcodebuild -version | sed -n '2p' | awk '{print $3}')" "$manifest_plist"
+          plutil -insert signing -string unsigned-ci-release-input "$manifest_plist"
+          plutil -insert artifactFilename -string "$(basename "$archive_zip")" "$manifest_plist"
+          plutil -insert archiveDirectory -string "$(basename "$archive_path")" "$manifest_plist"
+          plutil -insert artifactSHA256 -string "$archive_sha256" "$manifest_plist"
+          plutil -insert artifactBytes -integer "$archive_bytes" "$manifest_plist"
+          plutil -insert workflowRunURL -string "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$manifest_plist"
+          plutil -insert swiftPMTests -string passed "$manifest_plist"
+          plutil -insert executableUnitTests -string passed "$manifest_plist"
+          plutil -insert releasePerformanceGates -string passed "$manifest_plist"
+          plutil -insert smokeTests -string passed "$manifest_plist"
+          plutil -insert snapshotMatrix -string passed-72 "$manifest_plist"
+          plutil -insert uiTests -string passed-13-workflows-x-4-configurations "$manifest_plist"
+          plutil -insert accessibilityUITests -string passed-focused-workflow-x-3-configurations "$manifest_plist"
+          plutil -insert evidenceArchitecture -string seven-independent-xcuitest-shards "$manifest_plist"
+          plutil -insert uiShardCount -integer 4 "$manifest_plist"
+          plutil -insert uiWorkflowExecutionCount -integer 52 "$manifest_plist"
+          plutil -insert accessibilityUIShardCount -integer 3 "$manifest_plist"
+          plutil -insert accessibilityUIExecutionCount -integer 3 "$manifest_plist"
+          plutil -insert evidenceIndexFilename -string Blackbox-evidence-artifact-digests.plist "$manifest_plist"
+          plutil -insert evidenceIndexSHA256 -string "$evidence_index_sha256" "$manifest_plist"
+          plutil -insert evidenceIndexBytes -integer "$evidence_index_bytes" "$manifest_plist"
+          plutil -insert evidenceArtifactDigests -dictionary "$manifest_plist"
+          for digest_key in \
+            principal_screen_snapshots \
+            XCUITest_Light_Regular XCUITest_Light_Compact \
+            XCUITest_Dark_Regular XCUITest_Dark_Compact \
+            Accessibility_XCUITest_Increase_Contrast_Regular \
+            Accessibility_XCUITest_Increase_Contrast_Compact \
+            Accessibility_XCUITest_Large_Text_Reduced_Motion; do
+            digest="$(plutil -extract "artifactDigests.$digest_key" raw -o - "$evidence_digests")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            plutil -insert "evidenceArtifactDigests.$digest_key" -string "$digest" "$manifest_plist"
+          done
+          plutil -insert privacyGate -string passed "$manifest_plist"
+          plutil -insert dataPolicy -string synthetic-temporary-roots-only "$manifest_plist"
+          plutil -convert json -r -o "$manifest_json" "$manifest_plist"
+          plutil -convert xml1 -o /dev/null "$manifest_json"
+          test "$(plutil -extract artifactSHA256 raw -o - "$manifest_json")" = "$archive_sha256"
+          ditto "$evidence_digests" "$RUNNER_TEMP/Blackbox-evidence-artifact-digests.plist"
+          test "$(shasum -a 256 "$RUNNER_TEMP/Blackbox-evidence-artifact-digests.plist" | awk '{print $1}')" = "$evidence_index_sha256"
+
+      - name: Preserve unsigned release input
+        id: release_artifact
+        if: ${{ steps.archive.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-unsigned-universal2-release-input
+          path: |
+            ${{ runner.temp }}/Blackbox-unsigned-universal2.xcarchive.zip
+            ${{ runner.temp }}/Blackbox-unsigned-universal2.manifest.plist
+            ${{ runner.temp }}/Blackbox-unsigned-universal2.manifest.json
+            ${{ runner.temp }}/Blackbox-evidence-artifact-digests.plist
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write final synthetic verification report
+        id: verification_report
+        if: ${{ always() }}
+        env:
+          VERIFY_SOURCE_OUTCOME: ${{ steps.verify_source.outcome }}
+          VERIFY_XCODE_OUTCOME: ${{ steps.verify_xcode.outcome }}
+          ELIGIBLE: ${{ steps.eligibility.outputs.eligible }}
+          DOWNLOAD_SNAPSHOTS_OUTCOME: ${{ steps.download_snapshots.outcome }}
+          DOWNLOAD_UI_OUTCOME: ${{ steps.download_ui.outcome }}
+          DOWNLOAD_ACCESSIBILITY_OUTCOME: ${{ steps.download_accessibility.outcome }}
+          EVIDENCE_VALIDATION_OUTCOME: ${{ steps.evidence_validation.outcome }}
+          RELEASE_HYGIENE_OUTCOME: ${{ steps.release_hygiene.outcome }}
+          ARCHIVE_OUTCOME: ${{ steps.archive.outcome }}
+          RELEASE_ARTIFACT_OUTCOME: ${{ steps.release_artifact.outcome }}
+          RELEASE_ARTIFACT_DIGEST: ${{ steps.release_artifact.outputs.artifact-digest }}
+          CORE_VERIFY_SOURCE_OUTCOME: ${{ needs.core-gates.outputs.verify_source_outcome }}
+          CORE_VERIFY_XCODE_OUTCOME: ${{ needs.core-gates.outputs.verify_xcode_outcome }}
+          BUILD_OUTCOME: ${{ needs.core-gates.outputs.build_outcome }}
+          UNIT_TESTS_OUTCOME: ${{ needs.core-gates.outputs.unit_tests_outcome }}
+          SWIFTPM_TESTS_OUTCOME: ${{ needs.core-gates.outputs.swiftpm_tests_outcome }}
+          PERFORMANCE_OUTCOME: ${{ needs.core-gates.outputs.performance_outcome }}
+          SMOKE_OUTCOME: ${{ needs.core-gates.outputs.smoke_outcome }}
+          SNAPSHOTS_OUTCOME: ${{ needs.core-gates.outputs.snapshots_outcome }}
+          SNAPSHOT_ARTIFACT_OUTCOME: ${{ needs.core-gates.outputs.snapshot_artifact_outcome }}
+          UI_MATRIX_OUTCOME: ${{ needs.core-gates.outputs.ui_matrix_outcome }}
+          PRIVACY_OUTCOME: ${{ needs.core-gates.outputs.privacy_outcome }}
+          REPOSITORY_HYGIENE_OUTCOME: ${{ needs.core-gates.outputs.repository_hygiene_outcome }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/Blackbox-verification-report.md"
+          evidence_root="$RUNNER_TEMP/Blackbox-aggregate-evidence"
+          digest_plist="$evidence_root/Blackbox-evidence-artifact-digests.plist"
+
+          automated_test_status=passed
+          for outcome in \
+            "$CORE_JOB_RESULT" "$UI_JOB_RESULT" "$ACCESSIBILITY_JOB_RESULT" \
+            "$CORE_VERIFY_SOURCE_OUTCOME" "$CORE_VERIFY_XCODE_OUTCOME" "$BUILD_OUTCOME" \
+            "$UNIT_TESTS_OUTCOME" "$SWIFTPM_TESTS_OUTCOME" "$PERFORMANCE_OUTCOME" \
+            "$SMOKE_OUTCOME" "$SNAPSHOTS_OUTCOME" "$SNAPSHOT_ARTIFACT_OUTCOME" \
+            "$UI_MATRIX_OUTCOME" "$PRIVACY_OUTCOME" "$REPOSITORY_HYGIENE_OUTCOME" \
+            "$VERIFY_SOURCE_OUTCOME" "$VERIFY_XCODE_OUTCOME" \
+            "$DOWNLOAD_SNAPSHOTS_OUTCOME" "$DOWNLOAD_UI_OUTCOME" \
+            "$DOWNLOAD_ACCESSIBILITY_OUTCOME" "$EVIDENCE_VALIDATION_OUTCOME" \
+            "$RELEASE_HYGIENE_OUTCOME"; do
+            if test "$outcome" != success; then
+              automated_test_status=failed-or-incomplete
+            fi
+          done
+
+          automated_release_input_status=not-produced-for-this-ref
+          if test "$ELIGIBLE" = yes; then
+            automated_release_input_status=passed
+            if test "$automated_test_status" != passed \
+              || test "$ARCHIVE_OUTCOME" != success \
+              || test "$RELEASE_ARTIFACT_OUTCOME" != success; then
+              automated_release_input_status=failed-or-incomplete
+            fi
+          fi
+
+          digest_value() {
+            local key="$1"
+            if test -f "$digest_plist"; then
+              plutil -extract "artifactDigests.$key" raw -o - "$digest_plist" 2>/dev/null || printf unavailable
+            else
+              printf unavailable
+            fi
+          }
+
+          snapshot_count=unavailable
+          snapshot_tree_sha256=unavailable
+          if test -f "$digest_plist"; then
+            snapshot_count="$(plutil -extract snapshotCount raw -o - "$digest_plist")"
+            snapshot_tree_sha256="$(plutil -extract snapshotTreeSHA256 raw -o - "$digest_plist")"
+          fi
+
+          release_archive_sha256=unavailable
+          release_archive_bytes=unavailable
+          if test -f "$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip"; then
+            release_archive_sha256="$(shasum -a 256 "$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip" | awk '{print $1}')"
+            release_archive_bytes="$(stat -f '%z' "$RUNNER_TEMP/Blackbox-unsigned-universal2.xcarchive.zip")"
+          fi
+
+          {
+            echo '# Blackbox synthetic verification report'
+            echo
+            echo "- Automated test status: \`$automated_test_status\`"
+            echo "- Automated release-input status: \`$automated_release_input_status\`"
+            echo "- Repository: \`$GITHUB_REPOSITORY\`"
+            echo "- Commit: \`$BLACKBOX_SOURCE_COMMIT\`"
+            echo "- Event/ref: \`$GITHUB_EVENT_NAME\` / \`$GITHUB_REF\`"
+            echo "- Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (attempt \`$GITHUB_RUN_ATTEMPT\`)"
+            echo "- Runner: \`$RUNNER_OS $RUNNER_ARCH\`"
+            echo "- Xcode: \`$BLACKBOX_XCODE_VERSION ($BLACKBOX_XCODE_BUILD)\`"
+            echo '- UI architecture: seven independent XCUITest shards (four full-workflow and three focused-accessibility).'
+            echo '- Data policy: deterministic synthetic fixtures under fresh runner temporary roots only.'
+            echo '- Apple credentials: none supplied to CI.'
+            echo '- Live Application Support database: unavailable to and untouched by the runners.'
+            echo
+            echo '## Recorded automated outcomes'
+            echo
+            echo '| Gate | Outcome |'
+            echo '| --- | --- |'
+            echo "| Core job | \`$CORE_JOB_RESULT\` |"
+            echo "| Four full-workflow UI shards | \`$UI_JOB_RESULT\` |"
+            echo "| Three focused-accessibility UI shards | \`$ACCESSIBILITY_JOB_RESULT\` |"
+            echo "| Core exact source / Xcode | \`$CORE_VERIFY_SOURCE_OUTCOME\` / \`$CORE_VERIFY_XCODE_OUTCOME\` |"
+            echo "| Build | \`$BUILD_OUTCOME\` |"
+            echo "| Executable unit tests | \`$UNIT_TESTS_OUTCOME\` |"
+            echo "| SwiftPM tests | \`$SWIFTPM_TESTS_OUTCOME\` |"
+            echo "| Release performance gates | \`$PERFORMANCE_OUTCOME\` |"
+            echo "| Smoke tests | \`$SMOKE_OUTCOME\` |"
+            echo "| 72-image snapshot matrix / upload | \`$SNAPSHOTS_OUTCOME\` / \`$SNAPSHOT_ARTIFACT_OUTCOME\` |"
+            echo "| Xcode test-matrix definition | \`$UI_MATRIX_OUTCOME\` |"
+            echo "| Privacy / clean checkout | \`$PRIVACY_OUTCOME\` / \`$REPOSITORY_HYGIENE_OUTCOME\` |"
+            echo "| Aggregate exact source / Xcode | \`$VERIFY_SOURCE_OUTCOME\` / \`$VERIFY_XCODE_OUTCOME\` |"
+            echo "| Evidence downloads | \`$DOWNLOAD_SNAPSHOTS_OUTCOME\` / \`$DOWNLOAD_UI_OUTCOME\` / \`$DOWNLOAD_ACCESSIBILITY_OUTCOME\` |"
+            echo "| Seven-shard cryptographic verification | \`$EVIDENCE_VALIDATION_OUTCOME\` |"
+            echo "| Aggregate privacy and hygiene | \`$RELEASE_HYGIENE_OUTCOME\` |"
+            echo "| Unsigned Universal 2 archive / upload | \`$ARCHIVE_OUTCOME\` / \`$RELEASE_ARTIFACT_OUTCOME\` |"
+            echo
+            echo '## Immutable artifact evidence'
+            echo
+            echo "- Snapshot files: \`$snapshot_count\`"
+            echo "- Snapshot tree SHA-256: \`$snapshot_tree_sha256\`"
+            echo "- Snapshot artifact digest: \`$(digest_value principal_screen_snapshots)\`"
+            echo "- Light Regular UI artifact digest: \`$(digest_value XCUITest_Light_Regular)\`"
+            echo "- Light Compact UI artifact digest: \`$(digest_value XCUITest_Light_Compact)\`"
+            echo "- Dark Regular UI artifact digest: \`$(digest_value XCUITest_Dark_Regular)\`"
+            echo "- Dark Compact UI artifact digest: \`$(digest_value XCUITest_Dark_Compact)\`"
+            echo "- Increase Contrast Regular artifact digest: \`$(digest_value Accessibility_XCUITest_Increase_Contrast_Regular)\`"
+            echo "- Increase Contrast Compact artifact digest: \`$(digest_value Accessibility_XCUITest_Increase_Contrast_Compact)\`"
+            echo "- Large Text Reduced Motion artifact digest: \`$(digest_value Accessibility_XCUITest_Large_Text_Reduced_Motion)\`"
+            echo "- Unsigned archive SHA-256: \`$release_archive_sha256\`"
+            echo "- Unsigned archive bytes: \`$release_archive_bytes\`"
+            echo "- Release-input upload digest: \`${RELEASE_ARTIFACT_DIGEST:-unavailable}\`"
+            echo '- Artifact retention: 14 days.'
+            echo
+            echo '## Evidence boundary'
+            echo
+            echo '- Every UI shard has one selected test-plan configuration, a fresh synthetic root, an immutable result bundle, a console log, and an evidence manifest with independently rechecked hashes.'
+            echo '- This report records completed CI outcomes; its presence alone is not proof that any listed outcome succeeded.'
+            echo '- Keyboard-only and VoiceOver walkthroughs remain incomplete until a tester signs docs/ACCESSIBILITY_VERIFICATION.md.'
+            echo '- Developer ID signing, notarization, stapling, Gatekeeper assessment, final packaging, and the quarantined synthetic smoke launch are local credential-dependent gates and are not performed by CI.'
+          } > "$report"
+
+      - name: Preserve final verification report and evidence index
+        id: report_artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Blackbox-synthetic-verification-report
+          path: |
+            ${{ runner.temp }}/Blackbox-verification-report.md
+            ${{ runner.temp }}/Blackbox-aggregate-evidence/Blackbox-evidence-artifact-digests.plist
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce complete automated gates
+        if: ${{ always() }}
+        env:
+          ELIGIBLE: ${{ steps.eligibility.outputs.eligible }}
+          EVIDENCE_VALIDATION_OUTCOME: ${{ steps.evidence_validation.outcome }}
+          RELEASE_HYGIENE_OUTCOME: ${{ steps.release_hygiene.outcome }}
+          ARCHIVE_OUTCOME: ${{ steps.archive.outcome }}
+          RELEASE_ARTIFACT_OUTCOME: ${{ steps.release_artifact.outcome }}
+          REPORT_OUTCOME: ${{ steps.verification_report.outcome }}
+          REPORT_ARTIFACT_OUTCOME: ${{ steps.report_artifact.outcome }}
+        run: |
+          set -euo pipefail
+          test "$CORE_JOB_RESULT" = success
+          test "$UI_JOB_RESULT" = success
+          test "$ACCESSIBILITY_JOB_RESULT" = success
+          test "$EVIDENCE_VALIDATION_OUTCOME" = success
+          test "$RELEASE_HYGIENE_OUTCOME" = success
+          test "$REPORT_OUTCOME" = success
+          test "$REPORT_ARTIFACT_OUTCOME" = success
+          if test "$ELIGIBLE" = yes; then
+            test "$ARCHIVE_OUTCOME" = success
+            test "$RELEASE_ARTIFACT_OUTCOME" = success
+          fi

@@ -52,6 +52,8 @@ struct AircraftView: View {
                 .frame(minWidth: 420, idealWidth: 500)
         }
         .navigationTitle("Aircraft")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("aircraft.screen")
         .onAppear {
             if selection == nil { selection = sortedAircraft.first?.id }
         }
@@ -61,7 +63,7 @@ struct AircraftView: View {
         HStack {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Aircraft")
-                    .font(.system(size: 34, weight: .semibold))
+                    .pageTitleStyle()
                 Text("Fleet totals by registration and type.")
                     .foregroundStyle(OpenPilotTheme.muted)
             }

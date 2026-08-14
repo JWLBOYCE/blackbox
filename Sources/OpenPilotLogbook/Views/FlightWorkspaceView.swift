@@ -4,6 +4,7 @@ import OpenPilotLogbookCore
 struct FlightWorkspaceView: View {
     @ObservedObject var store: LogbookStore
     @State private var sortOrder = [KeyPathComparator(\FlightTableItem.date, order: .reverse)]
+    @FocusState private var searchFieldFocused: Bool
 
     private var rows: [FlightTableItem] {
         store.flights.map(FlightTableItem.init).sorted(using: sortOrder)
@@ -13,6 +14,20 @@ struct FlightWorkspaceView: View {
         HSplitView {
             VStack(spacing: 0) {
                 flightHeader
+                FlightFilterBar(query: store.flightQuery, resultCount: store.flights.count, reset: store.resetFlightFilters)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                FlightQueryEditor(
+                    query: store.flightQuery,
+                    aircraftIDs: store.availableAircraftIDs,
+                    aircraftTypes: store.availableAircraftTypes,
+                    pilotFunctions: store.availablePilotFunctions,
+                    operations: store.availableOperations,
+                    entryKinds: store.availableEntryKinds,
+                    apply: { store.applyFlightQuery($0) }
+                )
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
                 if !store.highlightedFlights.isEmpty {
                     SelectionSummaryBar(flights: store.highlightedFlights)
                         .padding(.horizontal, 14)
@@ -47,9 +62,14 @@ struct FlightWorkspaceView: View {
                     .width(94)
 
                     TableColumn("Role", value: \FlightTableItem.function) { item in
-                        Text(item.function)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(item.flight.pilotFlying ? OpenPilotTheme.green : item.rowStyle)
+                        HStack(spacing: 4) {
+                            Image(systemName: item.stateIcon)
+                                .accessibilityHidden(true)
+                            Text(item.function)
+                                .font(.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(item.flight.pilotFlying ? OpenPilotTheme.green : item.rowStyle)
+                        .accessibilityLabel("\(item.flight.recordState.displayName), role \(item.function.isEmpty ? "unspecified" : item.function)")
                     }
                     .width(48)
 
@@ -61,45 +81,52 @@ struct FlightWorkspaceView: View {
                     .width(52)
                 }
                 .tableStyle(.inset(alternatesRowBackgrounds: true))
+                .accessibilityIdentifier("flights.table")
                 .onChange(of: store.selectedRouteFlightIDs) { oldValue, newValue in
                     store.updateFlightSelection(from: oldValue, to: newValue)
                 }
             }
-            .frame(minWidth: 530, idealWidth: 650)
+            .frame(minWidth: 300, idealWidth: 410)
 
             FlightEditorView(store: store)
                 .padding(.trailing, 18)
                 .padding(.vertical, 18)
-                .frame(minWidth: 430)
+                .frame(minWidth: 300, idealWidth: 410)
         }
         .navigationTitle("Flights")
     }
 
     private var flightHeader: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("Flights")
                     .font(.title2.weight(.semibold))
-                Text("Click a heading to sort. Shift-click or use Shift-arrow to select a range.")
-                    .font(.caption)
+                Spacer(minLength: 8)
+                Text("\(store.flights.count.formatted()) records")
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(OpenPilotTheme.muted)
             }
-            Spacer()
-            TextField("Search", text: $store.searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 210)
-                .onSubmit { store.applySearch() }
-            Button(action: store.copySelectedFlights) {
-                Image(systemName: "doc.on.doc")
-            }
-            .help("Copy selected flights")
-            Button(action: store.pasteFlights) {
-                Image(systemName: "doc.on.clipboard")
-            }
-            .help("Paste copied flights as unlocked entries")
-            Text("\(store.flights.count.formatted())")
-                .font(.caption.monospacedDigit())
+            Text("Sort with a heading. Use Shift-click or Shift-arrow for a range.")
+                .font(.caption)
                 .foregroundStyle(OpenPilotTheme.muted)
+                .lineLimit(2)
+            HStack(spacing: 8) {
+                TextField("Search", text: $store.searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 100, maxWidth: .infinity)
+                    .onSubmit { store.applySearch() }
+                    .focused($searchFieldFocused)
+                    .onChange(of: store.searchFocusRequest) { _, _ in searchFieldFocused = true }
+                    .accessibilityIdentifier("flights.search")
+                Button(action: store.copySelectedFlights) {
+                    Image(systemName: "doc.on.doc")
+                }
+                .help("Copy selected flights")
+                Button(action: store.pasteFlights) {
+                    Image(systemName: "doc.on.clipboard")
+                }
+                .help("Paste copied flights as unlocked entries")
+            }
         }
         .padding(14)
     }
@@ -115,7 +142,15 @@ private struct FlightTableItem: Identifiable {
     var aircraft: String { flight.aircraftID }
     var function: String { flight.pilotFunction == "Co-pilot" ? "P2" : flight.pilotFunction }
     var duration: Int { flight.flyingMinutes }
-    var rowStyle: Color { flight.locked ? OpenPilotTheme.muted.opacity(0.72) : .primary }
+    var stateIcon: String {
+        switch flight.recordState {
+        case .draft: return "pencil.circle"
+        case .finalised: return "lock.circle"
+        case .superseded: return "arrow.triangle.branch"
+        case .trashed: return "trash.circle"
+        }
+    }
+    var rowStyle: Color { flight.recordState == .finalised || flight.recordState == .superseded ? OpenPilotTheme.muted.opacity(0.72) : .primary }
 }
 
 private struct SelectionSummaryBar: View {

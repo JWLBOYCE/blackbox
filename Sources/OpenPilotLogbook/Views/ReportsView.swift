@@ -10,8 +10,8 @@ struct ReportsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Reports")
-                        .font(.system(size: 34, weight: .semibold))
-                    Text("Generate CAA pages, encrypted backups, and local maintenance checks.")
+                        .pageTitleStyle()
+                    Text("Generate CAA-format pages, encrypted backups, and internal maintenance checks.")
                         .foregroundStyle(OpenPilotTheme.muted)
                 }
 
@@ -21,6 +21,11 @@ struct ReportsView: View {
                     MetricTile(title: "Duplicates", value: "\(store.duplicateGroups.count)", systemImage: "doc.on.doc", tint: store.duplicateGroups.isEmpty ? OpenPilotTheme.green : OpenPilotTheme.amber)
                 }
 
+                Text("CAA-format export currently includes exactly \(store.exportPreviewFlights.count) finalised active record\(store.exportPreviewFlights.count == 1 ? "" : "s"). Drafts, superseded entries, and Trash are excluded.")
+                    .font(.callout).foregroundStyle(.secondary)
+                FlightFilterBar(query: exportQuery, resultCount: store.exportPreviewFlights.count, reset: store.resetFlightFilters)
+                FlightQueryEditor(query: store.flightQuery, aircraftIDs: store.availableAircraftIDs, aircraftTypes: store.availableAircraftTypes, pilotFunctions: store.availablePilotFunctions, operations: store.availableOperations, entryKinds: store.availableEntryKinds, apply: { store.applyFlightQuery($0) })
+
                 exportPanel
                 encryptedBackupPanel
                 duplicatePanel
@@ -28,32 +33,47 @@ struct ReportsView: View {
             }
             .padding(24)
         }
+        .accessibilityIdentifier("reports.scroll")
         .fileImporter(isPresented: $showRestoreImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
             guard case let .success(urls) = result, let url = urls.first else { return }
             store.restoreEncryptedBackup(url: url)
         }
         .navigationTitle("Reports")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reports.screen")
     }
 
     private var exportPanel: some View {
         Panel("Export Pack", systemImage: "doc.text") {
             HStack(spacing: 12) {
                 Button {
-                    store.exportReports()
+                    store.exportToRememberedFolder()
                 } label: {
-                    Label("Export CAA CSV and HTML", systemImage: "square.and.arrow.up")
+                    Label("Export CAA-format Report", systemImage: "square.and.arrow.up")
                         .frame(minWidth: 210)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("reports.export")
 
                 Button {
-                    NSWorkspace.shared.open(store.paths.backupFolder)
+                    store.chooseAndExportReports()
                 } label: {
-                    Label("Show Exports", systemImage: "folder")
+                    Label("Choose Export Folder", systemImage: "folder.badge.plus")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("reports.chooseExportFolder")
+
+                Button(action: store.revealLastExport) {
+                    Label("Reveal Last Export", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.lastExport == nil)
+                .accessibilityIdentifier("reports.revealLastExport")
                 Spacer()
             }
+            Button("View Operation History") { store.showHistory() }
+                .buttonStyle(.link)
+                .accessibilityIdentifier("reports.viewExportHistory")
             if let lastExport = store.lastExport {
                 Divider().opacity(0.35)
                 VStack(alignment: .leading, spacing: 8) {
@@ -74,6 +94,10 @@ struct ReportsView: View {
                 SecureField("Backup passphrase", text: $store.backupPassphrase)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 420)
+                    .accessibilityIdentifier("reports.field.backup-passphrase")
+                Text("New backups require at least 12 characters. Existing legacy backups can still be restored with their original passphrase.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack(spacing: 12) {
                     Button {
                         store.createEncryptedBackup()
@@ -81,6 +105,16 @@ struct ReportsView: View {
                         Label("Create Encrypted Backup", systemImage: "lock.doc")
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(store.backupPassphrase.count < 12)
+                    .accessibilityIdentifier("reports.createBackup")
+
+                    Button {
+                        store.chooseAndCreateEncryptedBackup()
+                    } label: {
+                        Label("Choose Backup Folder", systemImage: "folder.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.backupPassphrase.count < 12)
 
                     Button {
                         showRestoreImporter = true
@@ -88,6 +122,8 @@ struct ReportsView: View {
                         Label("Restore Encrypted Backup", systemImage: "arrow.counterclockwise")
                     }
                     .buttonStyle(.bordered)
+                    .disabled(store.backupPassphrase.isEmpty)
+                    .accessibilityIdentifier("reports.restoreBackup")
                     Spacer()
                 }
                 if let lastBackup = store.lastBackup {
@@ -97,9 +133,40 @@ struct ReportsView: View {
                             .font(.headline)
                         Label(lastBackup.encryptedBackup.lastPathComponent, systemImage: "lock.doc")
                         Label(lastBackup.manifest.lastPathComponent, systemImage: "doc.plaintext")
+                        if let verification = store.lastBackupVerification {
+                            Label(verification.passed ? "Last verified backup passed" : "Last backup verification failed", systemImage: verification.passed ? "checkmark.shield" : "exclamationmark.shield")
+                            Text("Verified \(verification.verifiedAt.formatted()) · schema \(verification.schemaVersion) · \(verification.actualFlightCount) records")
+                                .font(.caption)
+                        }
+                        HStack {
+                            Button("Reveal in Finder") { store.platformServices.reveal([lastBackup.encryptedBackup]) }
+                            Button("Rehearse Restore", action: store.rehearseLastVerifiedRestore)
+                                .disabled(store.backupPassphrase.isEmpty)
+                                .accessibilityIdentifier("reports.rehearseRestore")
+                        }
                     }
                     .font(.callout)
                     .foregroundStyle(OpenPilotTheme.muted)
+                }
+                if let plan = store.pendingRestorePlan {
+                    Divider().opacity(0.35)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Verified Restore Preview").font(.headline)
+                        Text("SQLite integrity: \(plan.integrityMessage). Schema \(plan.schemaVersion).")
+                        LabeledContent("Flights", value: "\(plan.currentFlightCount) → \(plan.restoredFlightCount)")
+                        LabeledContent("Flying time", value: "\(LogbookFormatters.hours(plan.currentTotalMinutes)) → \(LogbookFormatters.hours(plan.restoredTotalMinutes))")
+                        Text("Applying this preview creates and verifies a recovery point, atomically replaces the database, and rolls back on failure.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Cancel Preview", action: store.cancelPendingRestore).buttonStyle(.bordered)
+                            Button("Restore Verified Backup", action: store.applyPendingRestore)
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("reports.applyRestore")
+                        }
+                        Button("View Operation History") { store.showHistory() }
+                            .buttonStyle(.link)
+                            .accessibilityIdentifier("reports.viewRestoreHistory")
+                    }
                 }
             }
         }
@@ -169,6 +236,12 @@ struct ReportsView: View {
                 }
             }
         }
+    }
+
+    private var exportQuery: FlightQuery {
+        var query = store.flightQuery
+        query.recordStates = [.finalised]
+        return query
     }
 }
 

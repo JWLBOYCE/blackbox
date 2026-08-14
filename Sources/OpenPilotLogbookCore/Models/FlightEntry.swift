@@ -1,5 +1,23 @@
 import Foundation
 
+public enum FlightRecordState: String, Codable, CaseIterable, Hashable, Identifiable {
+    case draft
+    case finalised
+    case superseded
+    case trashed
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .draft: return "Draft"
+        case .finalised: return "Finalised"
+        case .superseded: return "Superseded"
+        case .trashed: return "Trash"
+        }
+    }
+}
+
 public struct FlightEntry: Identifiable, Hashable, Codable {
     public var id: Int64?
     public var sourcePK: Int64?
@@ -48,6 +66,9 @@ public struct FlightEntry: Identifiable, Hashable, Codable {
     public var signatureName: String
     public var signatureReference: String
     public var locked: Bool
+    public var recordState: FlightRecordState
+    public var amendsFlightID: Int64?
+    public var supersededByFlightID: Int64?
 
     public init(
         id: Int64? = nil,
@@ -96,7 +117,10 @@ public struct FlightEntry: Identifiable, Hashable, Codable {
         remarks: String = "",
         signatureName: String = "",
         signatureReference: String = "",
-        locked: Bool = false
+        locked: Bool = false,
+        recordState: FlightRecordState? = nil,
+        amendsFlightID: Int64? = nil,
+        supersededByFlightID: Int64? = nil
     ) {
         self.id = id
         self.sourcePK = sourcePK
@@ -145,6 +169,9 @@ public struct FlightEntry: Identifiable, Hashable, Codable {
         self.signatureName = signatureName
         self.signatureReference = signatureReference
         self.locked = locked
+        self.recordState = recordState ?? (locked ? .finalised : .draft)
+        self.amendsFlightID = amendsFlightID
+        self.supersededByFlightID = supersededByFlightID
     }
 
     public var wrappedID: Int64 { id ?? -1 }
@@ -263,6 +290,28 @@ public struct LogbookSummary: Equatable {
         self.distanceNM = distanceNM
         self.lastFlightDate = lastFlightDate
     }
+
+    public init(flights: [FlightEntry]) {
+        self.init(
+            flightCount: flights.count,
+            totalMinutes: flights.reduce(0) { $0 + $1.flyingMinutes },
+            picMinutes: flights.reduce(0) { $0 + $1.picMinutes },
+            picusMinutes: flights.reduce(0) { $0 + $1.picusMinutes },
+            picusDayMinutes: flights.reduce(0) { $0 + $1.picusDayMinutes },
+            picusNightMinutes: flights.reduce(0) { $0 + $1.picusNightMinutes },
+            copilotMinutes: flights.reduce(0) { $0 + $1.copilotMinutes },
+            copilotDayMinutes: flights.reduce(0) { $0 + $1.copilotDayMinutes },
+            copilotNightMinutes: flights.reduce(0) { $0 + $1.copilotNightMinutes },
+            nightMinutes: flights.reduce(0) { $0 + $1.nightMinutes },
+            instrumentMinutes: flights.reduce(0) { $0 + $1.flyingInstrumentMinutes },
+            crossCountryMinutes: flights.reduce(0) { $0 + $1.crossCountryMinutes },
+            fstdMinutes: flights.reduce(0) { $0 + $1.fstdMinutes },
+            landings: flights.reduce(0) { $0 + $1.totalLandings },
+            passengers: flights.reduce(0) { $0 + $1.passengerCount },
+            distanceNM: flights.reduce(0) { $0 + $1.distanceNM },
+            lastFlightDate: flights.map(\.date).max()
+        )
+    }
 }
 
 public struct AircraftSummary: Identifiable, Equatable {
@@ -331,6 +380,10 @@ public struct PlaceVisitSummary: Identifiable, Equatable {
 
 public struct MapRoute: Identifiable, Equatable {
     public var id: Int64
+    public var date: Date
+    public var aircraftID: String
+    public var aircraftType: String
+    public var entryKind: String
     public var departure: String
     public var arrival: String
     public var departureLatitude: Double
@@ -339,8 +392,12 @@ public struct MapRoute: Identifiable, Equatable {
     public var arrivalLongitude: Double
     public var distanceNM: Double
 
-    public init(id: Int64, departure: String, arrival: String, departureLatitude: Double, departureLongitude: Double, arrivalLatitude: Double, arrivalLongitude: Double, distanceNM: Double) {
+    public init(id: Int64, date: Date = Date.distantPast, aircraftID: String = "", aircraftType: String = "", entryKind: String = "Flight", departure: String, arrival: String, departureLatitude: Double, departureLongitude: Double, arrivalLatitude: Double, arrivalLongitude: Double, distanceNM: Double) {
         self.id = id
+        self.date = date
+        self.aircraftID = aircraftID
+        self.aircraftType = aircraftType
+        self.entryKind = entryKind
         self.departure = departure
         self.arrival = arrival
         self.departureLatitude = departureLatitude
@@ -471,7 +528,7 @@ public struct LogTenComparisonSnapshot: Equatable {
     public var issues: [LogTenComparisonIssue]
 
     public var importedRowsMatch: Bool {
-        missingInBlackbox == 0 && missingInLogTen == 0 && issues.isEmpty
+        logTen.flightCount > 0 && missingInBlackbox == 0 && missingInLogTen == 0 && issues.isEmpty
     }
 
     public init(

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Architectures</key>
+	<array>
+		<string>arm64</string>
+		<string>x86_64</string>
+	</array>
+	<key>Build</key>
+	<string>1</string>
+	<key>BundleIdentifier</key>
+	<string>uk.co.blackbox.logbook</string>
+	<key>MinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>ProductName</key>
+	<string>Blackbox</string>
+	<key>Version</key>
+	<string>1.0.0</string>
+</dict>
+</plist>

@@ -3,219 +3,216 @@ import OpenPilotLogbookCore
 
 struct ContentView: View {
     @ObservedObject var store: LogbookStore
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.blackboxReduceMotionOverride) private var testReduceMotion
 
+    private var reduceMotion: Bool { systemReduceMotion || testReduceMotion }
     var body: some View {
-        HSplitView {
-            sidebar
-                .frame(minWidth: 220, idealWidth: 245, maxWidth: 270)
+        ZStack {
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                ZStack {
+                    OpenPilotTheme.background.ignoresSafeArea()
+                    detailView
+                }
+                .frame(minWidth: 560)
+            }
+            .navigationSplitViewStyle(.balanced)
+            .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search flights")
+            .onSubmit(of: .search, store.applySearch)
+            .onChange(of: store.searchText) { _, value in if value.isEmpty { store.applySearch() } }
+            .toolbar { toolbar }
+            .safeAreaInset(edge: .bottom) { statusBar }
+            .disabled(store.showExportConfirmation)
+            .accessibilityHidden(store.showExportConfirmation)
 
-            ZStack {
-                OpenPilotTheme.background.ignoresSafeArea()
-                detailView
-            }
-            .frame(minWidth: 880)
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button(action: store.startNewFlight) {
-                    Label("New Flight", systemImage: "plus")
-                }
-                Button(action: store.refresh) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                Button(action: store.exportReports) {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
+            if store.showExportConfirmation {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+                    .onTapGesture { }
+
+                ExportConfirmationOverlay(store: store)
+                    .padding(24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(1)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 16) {
-                Label("Local records", systemImage: "circle.fill")
-                    .foregroundStyle(OpenPilotTheme.green)
-                Text(store.statusMessage)
-                    .foregroundStyle(OpenPilotTheme.muted)
-                    .lineLimit(1)
-                Spacer()
-                Label(store.compliance.caaExportReady ? "CAA ready" : "Review needed", systemImage: store.compliance.caaExportReady ? "checkmark.circle" : "exclamationmark.triangle")
-                    .foregroundStyle(store.compliance.caaExportReady ? OpenPilotTheme.green : OpenPilotTheme.amber)
-            }
-            .font(.footnote)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
-            .background(.bar)
+        .alert("Unsaved Draft", isPresented: $store.showDiscardConfirmation) {
+            Button("Cancel", role: .cancel, action: store.cancelPendingSelection)
+            Button("Save Draft", action: store.saveDraftAndContinue)
+            Button("Discard Changes", role: .destructive, action: store.discardChangesAndContinue)
+        } message: {
+            Text("This draft has changes that have not been saved. They will not be written automatically.")
         }
-        .appBackground()
+        .alert("Back Up & Upgrade", isPresented: Binding(get: { store.upgradePreflight != nil }, set: { if !$0 { store.upgradePreflight = nil } })) {
+            Button("Quit", role: .cancel) { NSApp.terminate(nil) }
+            Button("Back Up & Upgrade", action: store.performUpgrade)
+        } message: {
+            if let plan = store.upgradePreflight {
+                Text("Blackbox will preserve \(plan.flightCount) entries exactly, create \(plan.proposedBackupURL.lastPathComponent), migrate schema \(plan.currentSchemaVersion) to \(plan.targetSchemaVersion), and verify every legacy field and SQLite integrity before opening.")
+            }
+        }
+        .transaction { transaction in if reduceMotion { transaction.animation = nil } }
     }
 
     private var sidebar: some View {
-        VStack(spacing: 0) {
-            sidebarHeader
-            VStack(spacing: 5) {
+        List(selection: Binding(get: { store.selectedSection }, set: store.requestSection)) {
+            Section {
                 ForEach(AppSection.allCases) { section in
                     Button {
-                        store.selectedSection = section
+                        store.requestSection(section)
                     } label: {
-                        SidebarRow(section: section, isSelected: store.selectedSection == section)
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(section.rawValue)
+                                Text(section.subtitle)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: section.icon).frame(width: 18)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
+                    .tag(section as AppSection?)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(section.rawValue), \(section.subtitle)")
+                    .accessibilityIdentifier("sidebar.\(section.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))")
                 }
+            } header: {
+                Label("Blackbox", systemImage: "airplane")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-
-            Spacer(minLength: 12)
-            sidebarSummary
-                .padding(.bottom, 34)
+            Section("Overview") {
+                LabeledContent("Flights", value: store.summary.flightCount.formatted())
+                LabeledContent("Total", value: LogbookFormatters.hours(store.summary.totalMinutes))
+            }
         }
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.060, green: 0.095, blue: 0.125),
-                    Color(red: 0.035, green: 0.055, blue: 0.070)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(OpenPilotTheme.border)
-                .frame(width: 1)
-        }
+        .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 250)
     }
 
-    @ViewBuilder
-    private var detailView: some View {
+    @ViewBuilder private var detailView: some View {
         switch store.selectedSection ?? .dashboard {
-        case .dashboard:
-            DashboardView(store: store)
-        case .flights:
-            FlightsView(store: store)
-        case .pages:
-            LogbookPagesView(store: store)
-        case .aircraft:
-            AircraftView(store: store)
-        case .people:
-            PeopleView(store: store)
-        case .analysis:
-            AnalysisView(store: store)
-        case .map:
-            MapDashboardView(store: store)
-        case .comparison:
-            LogTenComparisonView(store: store)
-        case .imports:
-            ImportView(store: store)
-        case .compliance:
-            ComplianceView(store: store)
-        case .reports:
-            ReportsView(store: store)
+        case .dashboard: DashboardView(store: store)
+        case .flights: FlightsView(store: store)
+        case .pages: LogbookPagesView(store: store)
+        case .aircraft: AircraftView(store: store)
+        case .people: PeopleView(store: store)
+        case .analysis: AnalysisView(store: store)
+        case .map: MapDashboardView(store: store)
+        case .comparison: LogTenComparisonView(store: store)
+        case .imports: ImportView(store: store)
+        case .compliance: ComplianceView(store: store)
+        case .reports: ReportsView(store: store)
+        case .history: HistoryView(store: store)
         }
     }
 
-    private var sidebarHeader: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(OpenPilotTheme.blue.gradient)
-                Image(systemName: "airplane")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 44, height: 44)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Blackbox")
-                    .font(.headline.weight(.semibold))
-                    .lineLimit(1)
-                Text("CAA-ready flight records")
-                    .font(.caption)
-                    .foregroundStyle(OpenPilotTheme.muted)
-            }
-            Spacer()
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button(action: store.startNewFlight) { Label("New Flight", systemImage: "plus") }
+                .help("New Flight (Command-N)")
+                .accessibilityIdentifier("toolbar.newFlight")
+            Button(action: { _ = store.saveDraft() }) { Label("Save Draft", systemImage: "square.and.arrow.down") }
+                .disabled(!store.canSaveDraft)
+                .help("Save Draft (Command-S)")
+                .accessibilityIdentifier("toolbar.saveDraft")
+            Button(action: store.refresh) { Label("Refresh", systemImage: "arrow.clockwise") }
+            Button(action: store.exportToRememberedFolder) { Label("Export CAA-format Report", systemImage: "square.and.arrow.up") }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 18)
-        .padding(.bottom, 10)
     }
 
-    private var sidebarSummary: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Divider().opacity(0.35)
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Overview")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(OpenPilotTheme.muted)
-                    .textCase(.uppercase)
-                SummaryRow(label: "Flights", value: "\(store.summary.flightCount)")
-                SummaryRow(label: "Total", value: LogbookFormatters.hours(store.summary.totalMinutes))
-                SummaryRow(label: "Last 12 Months", value: LogbookFormatters.hours(hoursInLast12Months))
-                SummaryRow(label: "Last Landing", value: lastLandingDate.map(LogbookFormatters.dateFormatter.string) ?? "None")
-            }
-            .padding(14)
-            .background(OpenPilotTheme.panel, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
-            .overlay {
-                RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
-                    .stroke(OpenPilotTheme.border, lineWidth: 1)
-            }
-        }
-        .padding(14)
-    }
-
-    private var hoursInLast12Months: Int {
-        let threshold = Calendar.current.date(byAdding: .year, value: -1, to: Date()) ?? Date.distantPast
-        return store.flights
-            .filter { $0.date >= threshold }
-            .reduce(0) { $0 + $1.flyingMinutes }
-    }
-
-    private var lastLandingDate: Date? {
-        store.flights
-            .filter { $0.totalLandings > 0 }
-            .max(by: { $0.date < $1.date })?
-            .date
-    }
-}
-
-private struct SidebarRow: View {
-    var section: AppSection
-    var isSelected: Bool = false
-
-    var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(section.rawValue)
-                    .font(.callout.weight(.medium))
-                Text(section.subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(OpenPilotTheme.muted)
-            }
-        } icon: {
-            Image(systemName: section.icon)
-                .font(.system(size: 16, weight: .medium))
-                .frame(width: 22)
-        }
-        .foregroundStyle(isSelected ? .white : .primary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .background(isSelected ? OpenPilotTheme.blue.opacity(0.92) : Color.clear, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
-    }
-}
-
-private struct SummaryRow: View {
-    var label: String
-    var value: String
-
-    var body: some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(OpenPilotTheme.muted)
-            Spacer()
-            Text(value)
-                .font(.caption.monospacedDigit().weight(.medium))
+    private var statusBar: some View {
+        HStack(spacing: 16) {
+            Label("Local records", systemImage: "circle.fill").foregroundStyle(OpenPilotTheme.green)
+            Text(store.statusMessage)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .accessibilityIdentifier("status.message")
+            Spacer()
+            Label(store.compliance.checkedFlights == 0 ? "No finalised entries checked" : (store.compliance.caaExportReady ? "Internal checks passed" : "Review needed"), systemImage: store.compliance.checkedFlights == 0 ? "doc.badge.clock" : (store.compliance.caaExportReady ? "checkmark.circle" : "exclamationmark.triangle"))
+                .foregroundStyle(store.compliance.checkedFlights == 0 ? OpenPilotTheme.blue : (store.compliance.caaExportReady ? OpenPilotTheme.green : OpenPilotTheme.amber))
         }
-        .font(.caption)
+        .font(.footnote)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+}
+
+private struct ExportConfirmationOverlay: View {
+    @ObservedObject var store: LogbookStore
+
+    private var recordDescription: String {
+        let count = store.exportPreviewFlights.count
+        return "\(count) finalised active record\(count == 1 ? "" : "s")"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.title2)
+                    .foregroundStyle(OpenPilotTheme.blue)
+                    .accessibilityHidden(true)
+                Text("Confirm CAA-format Export")
+                    .font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("reports.exportConfirmation.title")
+            }
+
+            Text("Export exactly \(recordDescription) using the visible filters.")
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Destination")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(store.pendingExportDestinationName)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("reports.exportConfirmation.destination")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Drafts, superseded entries, and Trash are excluded.", systemImage: "line.3.horizontal.decrease.circle")
+                Label("This export is not regulatory certification.", systemImage: "info.circle")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel", role: .cancel, action: store.cancelExport)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("reports.exportConfirmation.cancel")
+                Button("Export CAA-format Report", action: store.confirmExport)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("reports.exportConfirmation.confirm")
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 500, idealWidth: 600, maxWidth: 680)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(.separator.opacity(0.45), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.3), radius: 24, y: 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reports.exportConfirmation")
     }
 }

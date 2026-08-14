@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>A privacy-first native macOS flight logbook for professional pilots.</strong><br>
-  Import from LogTen Pro, understand your flying, check CAA readiness, and keep every record under your control.
+  Import from LogTen Pro, understand your flying, run internal logbook checks, and keep every record under your control.
 </p>
 
 <p align="center">
@@ -28,12 +28,12 @@ Pilot records are personal, operationally important, and difficult to move betwe
 
 | Private by design | Built for real logbooks | More than a spreadsheet |
 |:---|:---|:---|
-| Local-only SQLite storage, read-only LogTen import, and encrypted backups. | `HH:MM` time entry, nautical miles, crew roles, FSTD, PIC/PICUS/co-pilot and instructor time. | Route globe, type and people analysis, duplicate detection, recency, validation, and printable reports. |
+| Local-only SQLite storage, read-only import previews, and encrypted backups. | `HH:MM` time entry, nautical miles, crew roles, FSTD, PIC/PICUS/co-pilot and instructor time. | Route globe, type and people analysis, duplicate detection, configurable recency, internal validation, and printable reports. |
 
 ## Inside the cockpit
 
 <p align="center">
-  <img src="docs/assets/dashboard.jpg" alt="Blackbox dashboard showing totals, CAA readiness, recent routes, and recent flights" width="100%">
+  <img src="docs/assets/dashboard.jpg" alt="Blackbox dashboard showing totals, internal logbook checks, recent routes, and recent flights" width="100%">
 </p>
 
 <table>
@@ -56,26 +56,27 @@ Pilot records are personal, operationally important, and difficult to move betwe
 - Flight and simulator entries with PIC, PICUS, co-pilot, dual, instructor, FSTD, IFR/instrument, and cross-country time.
 - Captain, First Officer, Instructor, and other crew roles.
 - Searchable flight history, logbook pages, aircraft, people, and airport views.
-- Duplicate-flight detection and manual airport-coordinate overrides.
+- Explicit Save Draft and Finalise & Lock workflows, preserved amendments, durable revisions, and recoverable Trash.
+- Suggestions are labelled and require acceptance; entered flight facts are never silently repaired or normalised.
 
 ### Import with confidence
 
-- Read-only import from LogTen Pro's `LogTenCoreDataStore.sql`.
-- Timestamped backup before every import.
-- Side-by-side LogTen comparison and documented field mappings.
-- Roster policy that ignores ground duties and normalises IATA tokens to ICAO where possible.
+- Read-only previews for LogTen Pro and document/OCR sources, with field-level selection and duplicate/conflict decisions.
+- A verified recovery backup and staged database are created before an approved import changes the active database.
+- Blackbox-only rows are preserved; a missing source row never deletes a flight.
+- Side-by-side LogTen comparison has explicit unavailable, empty, failed, different, and genuine-match states.
 
 ### Stay current and export-ready
 
-- CAA/FCL.050-oriented completeness checks.
-- Last-12-months totals, 90-day landing and night-landing recency, and instrument-time monitoring.
-- Position-based day/night calculations using bundled airport coordinates.
-- CSV and printable HTML reports for portable, auditable records.
+- Internal completeness and consistency checks. They are not regulatory certification.
+- Last-12-months totals and configurable 90-day landing, night-landing, and instrument-time indicators.
+- Conservative, provenance-labelled day/night suggestions that require explicit acceptance.
+- CSV, printable HTML, and CAA-format reports for portable, auditable records.
 
 ### Own the data
 
 - Local-only SQLite database; no account and no hosted backend.
-- Encrypted backup and restore.
+- Encrypted backup inspection and staged restore with verification, recovery points, and operation history.
 - Privacy guards in Git and CI block databases, logbooks, rosters, exports, and other sensitive files.
 
 ## Get started
@@ -93,18 +94,19 @@ cd blackbox
 ./script/build_and_run.sh
 ```
 
-The script builds a local `Blackbox.app` bundle and opens it. To import an existing logbook, follow the [LogTen Pro import guide](docs/LOGTEN_IMPORT.md).
+The development script builds a local `Blackbox.app` and opens it against a fresh temporary synthetic data root. Debug, screenshot, and UI-test launches fail closed rather than opening the production logbook. To understand the production import workflow, read the [LogTen Pro import guide](docs/LOGTEN_IMPORT.md); do not use real pilot records for development or tests.
 
 ### Verify a change
 
 ```bash
-swift build
+swift build --scratch-path /tmp/blackbox-build
+swift test --scratch-path /tmp/blackbox-tests
 swift run OpenPilotLogbookCoreUnitTests
 swift run OpenPilotLogbookCoreSmokeTests
 ./script/build_and_run.sh --check
 ```
 
-The snapshot checker renders the main app surfaces with synthetic records. Pull requests run the same checks in CI, followed by the private-data guard.
+The snapshot checker renders 72 synthetic screenshots across the principal screens, appearances, and widths. Pull requests pin full Xcode for hosted macOS UI workflows, run the privacy gates, and produce an unsigned Universal 2 archive only after verification. Signing and notarisation use local Keychain credentials that never enter CI.
 
 ## Privacy promise
 

@@ -26,16 +26,22 @@ Protect `main` with:
 Use the included GitHub Actions workflow:
 
 ```text
-Swift CI / build-and-test
+Aggregate evidence and unsigned release input
 ```
 
-That single required check runs:
+That aggregate check requires the complete matrix to pass, including:
 
 - `swift build`
 - `swift run OpenPilotLogbookCoreUnitTests`
 - `swift run OpenPilotLogbookCoreSmokeTests`
 - `./script/build_and_run.sh --check`
-- private-data filename guard
+- four full-workflow UI configurations
+- three focused accessibility configurations
+- repository and packaged-app privacy gates
+
+Unsigned inputs eligible for local Developer ID signing are produced only by a
+successful push workflow on protected `main`. Pull-request workflows never
+produce a signable release input.
 
 ## Repository Rulesets
 

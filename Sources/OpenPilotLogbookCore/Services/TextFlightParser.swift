@@ -102,7 +102,11 @@ public enum TextFlightParser {
         if cleaned.contains(":") {
             let parts = cleaned.split(separator: ":")
             guard parts.count == 2, let hours = Int(parts[0]), let minutes = Int(parts[1]) else { return nil }
-            return hours * 60 + minutes
+            guard (0..<30).contains(hours), (0..<60).contains(minutes) else { return nil }
+            let (hourMinutes, multipliedOverflow) = hours.multipliedReportingOverflow(by: 60)
+            let (totalMinutes, addedOverflow) = hourMinutes.addingReportingOverflow(minutes)
+            guard !multipliedOverflow, !addedOverflow else { return nil }
+            return totalMinutes
         }
         if let decimal = Double(cleaned), decimal > 0, decimal < 30 {
             return Int((decimal * 60).rounded())

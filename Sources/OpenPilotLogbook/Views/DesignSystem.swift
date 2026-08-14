@@ -4,17 +4,17 @@ import OpenPilotLogbookCore
 enum OpenPilotTheme {
     static let background = LinearGradient(
         colors: [
-            Color(red: 0.050, green: 0.070, blue: 0.082),
-            Color(red: 0.075, green: 0.105, blue: 0.120),
-            Color(red: 0.035, green: 0.048, blue: 0.060)
+            Color(nsColor: .windowBackgroundColor),
+            Color(nsColor: .underPageBackgroundColor),
+            Color(nsColor: .windowBackgroundColor)
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
-    static let panel = Color.white.opacity(0.055)
-    static let panelRaised = Color.white.opacity(0.080)
-    static let border = Color.white.opacity(0.120)
-    static let muted = Color.white.opacity(0.62)
+    static let panel = Color(nsColor: .controlBackgroundColor).opacity(0.72)
+    static let panelRaised = Color(nsColor: .controlBackgroundColor).opacity(0.92)
+    static let border = Color(nsColor: .separatorColor)
+    static let muted = Color.secondary
     static let blue = Color(red: 0.270, green: 0.560, blue: 1.000)
     static let cyan = Color(red: 0.460, green: 0.760, blue: 1.000)
     static let green = Color(red: 0.420, green: 0.880, blue: 0.410)
@@ -28,12 +28,16 @@ struct AppBackground: ViewModifier {
         content
             .background(OpenPilotTheme.background)
             .foregroundStyle(.primary)
-            .preferredColorScheme(.dark)
     }
 }
 
 extension View {
     func appBackground() -> some View { modifier(AppBackground()) }
+
+    func pageTitleStyle() -> some View {
+        font(.largeTitle.weight(.semibold))
+            .accessibilityAddTraits(.isHeader)
+    }
 }
 
 struct Panel<Content: View>: View {
@@ -57,6 +61,7 @@ struct Panel<Content: View>: View {
                     }
                     Text(title)
                         .font(.headline.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
                 }
             }
             content
@@ -100,6 +105,9 @@ struct MetricTile: View {
             RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
                 .stroke(OpenPilotTheme.border, lineWidth: 1)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
     }
 }
 
@@ -116,24 +124,27 @@ struct StatTile: View {
 struct ReadinessStrip: View {
     var isReady: Bool
     var issueCount: Int
+    var checkedCount: Int
     var action: () -> Void
+
+    private var tint: Color { checkedCount == 0 ? OpenPilotTheme.blue : (isReady ? OpenPilotTheme.green : OpenPilotTheme.amber) }
 
     var body: some View {
         HStack(spacing: 18) {
-            Image(systemName: isReady ? "checkmark.shield" : "exclamationmark.triangle")
+            Image(systemName: checkedCount == 0 ? "doc.badge.clock" : (isReady ? "checkmark.shield" : "exclamationmark.triangle"))
                 .font(.system(size: 36, weight: .medium))
-                .foregroundStyle(isReady ? OpenPilotTheme.green : OpenPilotTheme.amber)
+                .foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 4) {
-                Text(isReady ? "CAA Ready" : "CAA Review Needed")
+                Text(checkedCount == 0 ? "No Finalised Entries Checked" : (isReady ? "Internal Checks Passed" : "Review Needed"))
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(isReady ? OpenPilotTheme.green : OpenPilotTheme.amber)
-                Text(isReady ? "Required fields are complete." : "\(issueCount) entries need attention before export.")
+                    .foregroundStyle(tint)
+                Text(checkedCount == 0 ? "Drafts remain available in the app but are excluded from official checks and CAA-format exports." : (isReady ? "Blackbox found no completeness issues. This is not regulatory certification." : "\(issueCount) finalised entries need attention before export."))
                     .font(.callout)
                     .foregroundStyle(OpenPilotTheme.muted)
             }
             Spacer()
             Button(action: action) {
-                Label("View CAA Check", systemImage: "chevron.right")
+                Label("View Logbook Checks", systemImage: "chevron.right")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.bordered)
@@ -142,7 +153,7 @@ struct ReadinessStrip: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: OpenPilotTheme.corner))
         .overlay {
             RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
-                .stroke(isReady ? OpenPilotTheme.green.opacity(0.35) : OpenPilotTheme.amber.opacity(0.45), lineWidth: 1)
+                .stroke(tint.opacity(0.45), lineWidth: 1)
         }
     }
 }

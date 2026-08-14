@@ -42,21 +42,36 @@ enum AppSnapshotRunner {
         try seedPrivacySafeSampleData(at: paths)
         let store = LogbookStore(paths: paths)
         store.selectedSection = AppSection(rawValue: section) ?? sectionByIdentifier(section)
-        if store.selectedSection == .comparison {
-            store.refreshLogTenComparison()
-        }
 
         let size = CGSize(width: width, height: height)
-        let view = NSHostingView(rootView: ContentView(store: store).frame(width: size.width, height: size.height))
-        view.appearance = NSAppearance(named: .darkAqua)
+        let hostingController = NSHostingController(rootView: ContentView(store: store).frame(width: size.width, height: size.height))
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.titled, .resizable, .closable], backing: .buffered, defer: false)
+        window.contentViewController = hostingController
+        window.setContentSize(size)
+        switch ProcessInfo.processInfo.environment["OPENPILOT_SNAPSHOT_APPEARANCE"]?.lowercased() {
+        case "light": window.appearance = NSAppearance(named: .aqua)
+        case "contrast": window.appearance = NSAppearance(named: .accessibilityHighContrastDarkAqua)
+        default: window.appearance = NSAppearance(named: .darkAqua)
+        }
+        window.orderFrontRegardless()
+        window.layoutIfNeeded()
+        window.displayIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+        guard let view = window.contentView else { throw SnapshotError.missingWindowContent }
         view.frame = CGRect(origin: .zero, size: size)
         view.wantsLayer = true
         view.layoutSubtreeIfNeeded()
+        view.displayIfNeeded()
 
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+        let bitmap: NSBitmapImageRep
+        if let windowImage = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber), [.boundsIgnoreFraming, .bestResolution]) {
+            bitmap = NSBitmapImageRep(cgImage: windowImage)
+        } else if let cached = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: cached)
+            bitmap = cached
+        } else {
             throw SnapshotError.bitmapCreation
         }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
             throw SnapshotError.pngEncoding
         }
@@ -64,6 +79,7 @@ enum AppSnapshotRunner {
         let url = URL(fileURLWithPath: outputPath)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try pngData.write(to: url, options: .atomic)
+        window.orderOut(nil)
     }
 
     private static func seedPrivacySafeSampleData(at paths: LogbookPaths) throws {
@@ -137,8 +153,75 @@ enum AppSnapshotRunner {
                 arrivalLongitude: arrivalCoordinate.1,
                 remarks: "Synthetic demonstration record"
             )
-            _ = try repository.save(flight)
+            let id = try repository.saveDraft(flight, origin: "synthetic_snapshot")
+            if index < 10, var saved = try repository.flight(id: id) {
+                saved.id = id
+                _ = try repository.finalise(saved, acknowledgeWarnings: true, origin: "synthetic_snapshot")
+            }
         }
+
+        for index in 1...2 {
+            let recoverable = FlightEntry(
+                date: calendar.date(byAdding: .day, value: -index, to: today) ?? today,
+                departure: "EGLL",
+                arrival: index == 1 ? "EHAM" : "EDDF",
+                aircraftID: "G-BBXT",
+                aircraftType: "A320",
+                flightNumber: "TRASH-\(index)",
+                operation: "MP",
+                pilotFunction: "Co-pilot",
+                totalMinutes: 45 + index,
+                copilotMinutes: 45 + index,
+                remarks: "Synthetic recoverable screenshot record"
+            )
+            let id = try repository.saveDraft(recoverable, origin: "synthetic_snapshot")
+            try repository.moveToTrash(id: id, origin: "synthetic_snapshot")
+        }
+
+        try createEmptyLogTenFixture(at: paths.sourceLogTenDatabase)
+    }
+
+    /// The principal-screen snapshot intentionally demonstrates the explicit
+    /// empty-source state. Match/difference states are exercised by dedicated
+    /// XCUITest fixtures, and an empty valid database avoids presenting a
+    /// synthetic missing path as an unexpected comparison failure.
+    private static func createEmptyLogTenFixture(at url: URL) throws {
+        let database = try SQLiteConnection(path: url.path)
+        try database.execute("CREATE TABLE ZAIRCRAFTTYPE (Z_PK INTEGER PRIMARY KEY, ZAIRCRAFTTYPE_TYPE TEXT, ZAIRCRAFTTYPE_MODEL TEXT)")
+        try database.execute("CREATE TABLE ZAIRCRAFT (Z_PK INTEGER PRIMARY KEY, ZAIRCRAFT_AIRCRAFTID TEXT, ZAIRCRAFT_AIRCRAFTTYPE INTEGER)")
+        try database.execute("CREATE TABLE ZPLACE (Z_PK INTEGER PRIMARY KEY, ZPLACE_IDENTIFIER TEXT, ZPLACE_ICAOID TEXT, ZPLACE_IATAID TEXT, ZPLACE_LAT REAL, ZPLACE_LON REAL)")
+        try database.execute("CREATE TABLE ZPERSON (Z_PK INTEGER PRIMARY KEY, ZPERSON_FIRSTNAME TEXT, ZPERSON_LASTNAME TEXT, ZPERSON_FULLNAME TEXT, ZPERSON_NAME TEXT)")
+        try database.execute("""
+            CREATE TABLE ZFLIGHTCREW (
+                Z_PK INTEGER PRIMARY KEY, ZFLIGHTCREW_FLIGHT INTEGER,
+                ZFLIGHTCREW_PIC INTEGER, ZFLIGHTCREW_SIC INTEGER,
+                ZFLIGHTCREW_COMMANDER INTEGER, ZFLIGHTCREW_INSTRUCTOR INTEGER,
+                ZFLIGHTCREW_FLIGHTENGINEER INTEGER, ZFLIGHTCREW_PURSER INTEGER,
+                ZFLIGHTCREW_RELIEF1 INTEGER, ZFLIGHTCREW_RELIEF2 INTEGER,
+                ZFLIGHTCREW_RELIEF3 INTEGER, ZFLIGHTCREW_RELIEF4 INTEGER,
+                ZFLIGHTCREW_STUDENT INTEGER
+            )
+            """)
+        try database.execute("""
+            CREATE TABLE ZFLIGHT (
+                Z_PK INTEGER PRIMARY KEY, ZFLIGHT_FLIGHTDATE REAL,
+                ZFLIGHT_FROMPLACE INTEGER, ZFLIGHT_TOPLACE INTEGER,
+                ZFLIGHT_ROUTE TEXT, ZFLIGHT_AIRCRAFT INTEGER,
+                ZFLIGHT_AIRCRAFTTYPE INTEGER, ZFLIGHT_FLIGHTNUMBER TEXT,
+                ZFLIGHT_MULTIPILOT INTEGER, ZFLIGHT_TOTALTIME INTEGER,
+                ZFLIGHT_PIC INTEGER, ZFLIGHT_PICNIGHT INTEGER,
+                ZFLIGHT_P1US INTEGER, ZFLIGHT_CUSTOMTIME4 INTEGER,
+                ZFLIGHT_P1USNIGHT INTEGER, ZFLIGHT_CUSTOMTIME3 INTEGER,
+                ZFLIGHT_DUALRECEIVED INTEGER, ZFLIGHT_DUALGIVEN INTEGER,
+                ZFLIGHT_NIGHT INTEGER, ZFLIGHT_CUSTOMTIME2 INTEGER,
+                ZFLIGHT_CROSSCOUNTRY INTEGER, ZFLIGHT_SIMULATOR INTEGER,
+                ZFLIGHT_PILOTFLYINGCAPACITY INTEGER, ZFLIGHT_DAYTAKEOFFS INTEGER,
+                ZFLIGHT_NIGHTTAKEOFFS INTEGER, ZFLIGHT_TOTALTAKEOFFS INTEGER,
+                ZFLIGHT_DAYLANDINGS INTEGER, ZFLIGHT_NIGHTLANDINGS INTEGER,
+                ZFLIGHT_TOTALLANDINGS INTEGER, ZFLIGHT_PAXCOUNT INTEGER,
+                ZFLIGHT_DISTANCE REAL, ZFLIGHT_REMARKS TEXT
+            )
+            """)
     }
 
     private static func sectionByIdentifier(_ identifier: String) -> AppSection {
@@ -153,6 +236,7 @@ enum AppSnapshotRunner {
         case "imports", "import": return .imports
         case "compliance", "caa", "caa-check": return .compliance
         case "reports": return .reports
+        case "history": return .history
         default: return .dashboard
         }
     }
@@ -160,5 +244,6 @@ enum AppSnapshotRunner {
     private enum SnapshotError: Error {
         case bitmapCreation
         case pngEncoding
+        case missingWindowContent
     }
 }

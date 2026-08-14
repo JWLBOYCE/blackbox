@@ -12,6 +12,14 @@ public struct LogbookPaths: Equatable {
     }
 
     public static var applicationSupport: LogbookPaths {
+        if let override = ProcessInfo.processInfo.environment["BLACKBOX_DATA_ROOT"], !override.isEmpty {
+            let root = URL(fileURLWithPath: override, isDirectory: true)
+            return LogbookPaths(
+                backupFolder: root.appendingPathComponent("Backups", isDirectory: true),
+                sourceLogTenDatabase: root.appendingPathComponent("Import Sources", isDirectory: true).appendingPathComponent("LogTenCoreDataStore.sql"),
+                workingDatabase: root.appendingPathComponent("Blackbox.sqlite")
+            )
+        }
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Application Support", isDirectory: true)

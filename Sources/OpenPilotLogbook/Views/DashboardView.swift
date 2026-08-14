@@ -11,7 +11,8 @@ struct DashboardView: View {
                 metrics
                 ReadinessStrip(
                     isReady: store.compliance.caaExportReady,
-                    issueCount: store.compliance.issues.count
+                    issueCount: store.compliance.issues.count,
+                    checkedCount: store.compliance.checkedFlights
                 ) {
                     store.selectedSection = .compliance
                 }
@@ -22,13 +23,15 @@ struct DashboardView: View {
         }
         .scrollContentBackground(.hidden)
         .navigationTitle("Dashboard")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dashboard.screen")
     }
 
     private var header: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Dashboard")
-                    .font(.system(size: 30, weight: .semibold, design: .default))
+                    .pageTitleStyle()
                 Text("Your current totals, recency, and latest sectors.")
                     .font(.callout)
                     .foregroundStyle(OpenPilotTheme.muted)
@@ -47,6 +50,8 @@ struct DashboardView: View {
     private var metrics: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
             MetricTile(title: "Total", value: LogbookFormatters.hours(store.summary.totalMinutes), systemImage: "clock", tint: OpenPilotTheme.cyan)
+            MetricTile(title: "FSTD", value: LogbookFormatters.hours(store.summary.fstdMinutes), systemImage: "rectangle.inset.filled", tint: OpenPilotTheme.blue)
+                .accessibilityIdentifier("dashboard.metric.fstd")
             MetricTile(title: "Last 12 Months", value: LogbookFormatters.hours(store.recency.hoursLast12Months), systemImage: "calendar.badge.clock", tint: OpenPilotTheme.green)
             MetricTile(title: "90 Day Landings", value: "\(store.recency.landingsLast90Days)", systemImage: "arrow.down.to.line", tint: OpenPilotTheme.green)
             MetricTile(title: "Last Landing", value: store.recency.daysSinceLastLanding.map { "\($0)d ago" } ?? "None", systemImage: "airplane.arrival", tint: OpenPilotTheme.blue)
@@ -56,13 +61,13 @@ struct DashboardView: View {
     private var lowerGrid: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 14) {
-                routesPanel.frame(minWidth: 420, maxWidth: .infinity)
                 recentFlightsPanel.frame(minWidth: 520, maxWidth: .infinity)
+                routesPanel.frame(minWidth: 420, maxWidth: .infinity)
             }
 
             VStack(alignment: .leading, spacing: 14) {
-                routesPanel
                 recentFlightsPanel
+                routesPanel
             }
         }
     }

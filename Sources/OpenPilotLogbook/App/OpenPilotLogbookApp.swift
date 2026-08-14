@@ -5,42 +5,313 @@ import OpenPilotLogbookCore
 @main
 struct OpenPilotLogbookApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = LogbookStore()
+    @StateObject private var store = LogbookStore(paths: UITestLaunchConfiguration.pathsForCurrentLaunch())
 
     var body: some Scene {
-        WindowGroup("Blackbox") {
+        Window("Blackbox", id: "blackbox-main") {
             ContentView(store: store)
-                .frame(minWidth: 1240, minHeight: 740)
+                .modifier(UITestAccessibilityEnvironment())
+                .modifier(WindowCloseGuardBinding(appDelegate: appDelegate, store: store))
+                .frame(minWidth: 860, minHeight: 680)
                 .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
         }
         .commands {
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { UndoCommandRouter(store: store).undo() }
+                    .keyboardShortcut("z", modifiers: [.command])
+
+                Button("Redo") { UndoCommandRouter(store: store).redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .newItem) {
                 Button("New Flight") { store.startNewFlight() }
                     .keyboardShortcut("n", modifiers: [.command])
-                Button("Export CAA Files") { store.exportReports() }
+            }
+            CommandGroup(before: .saveItem) {
+                Button("Save Draft") { store.saveDraft() }
+                    .keyboardShortcut("s", modifiers: [.command])
+                    .disabled(!store.canSaveDraft)
+            }
+            CommandGroup(after: .importExport) {
+                Button("Export CAA-format Report") { store.exportToRememberedFolder() }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }
             CommandMenu("Flights") {
+                Button("Finalise Entry") { store.requestFinalise() }
+                    .keyboardShortcut(.return, modifiers: [.command, .shift])
+                    .disabled(!store.canFinalise)
+                Divider()
                 Button("Copy Selected Flights") { store.copySelectedFlights() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                 Button("Paste Flights") { store.pasteFlights() }
                     .keyboardShortcut("v", modifiers: [.command, .shift])
+                Button("Duplicate Flight") { store.duplicateCurrentFlight() }
+                    .keyboardShortcut("d", modifiers: [.command])
                 Divider()
-                Button("Show Logbook Pages") { store.selectedSection = .pages }
+                Button("Search Flights") { store.requestSearchFocus() }
+                    .keyboardShortcut("f", modifiers: [.command])
+                Button("Show Logbook Pages") { store.requestSection(.pages) }
                     .keyboardShortcut("p", modifiers: [.command, .option])
             }
         }
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+/// Preserves chronological Undo when AppKit exposes a responder-local text
+/// manager alongside Blackbox's durable window manager. Any responder-local
+/// action is newer than the latest
+/// registered Blackbox operation because older secondary stacks are cleared at
+/// that operation boundary. Redo therefore walks the durable operation first,
+/// then the later responder-local action.
+@MainActor
+struct UndoCommandRouter {
+    let store: LogbookStore
+    private let injectedActiveResponderUndoManager: (() -> UndoManager?)?
+
+    init(
+        store: LogbookStore,
+        activeResponderUndoManager: (() -> UndoManager?)? = nil
+    ) {
+        self.store = store
+        self.injectedActiveResponderUndoManager = activeResponderUndoManager
+    }
+
+    func undo() {
+        let activeManager = activeResponderUndoManager()
+        if let activeManager,
+           activeManager !== store.sessionUndoManager,
+           activeManager.canUndo {
+            activeManager.undo()
+            return
+        }
+        store.undoLastSessionAction()
+    }
+
+    func redo() {
+        if let activeManager = activeResponderUndoManager(),
+           activeManager !== store.sessionUndoManager,
+           activeManager.canUndo,
+           store.sessionUndoManager.canRedo {
+            // A new responder-local edit after a Blackbox Undo creates a new
+            // branch. Never resurrect the abandoned Blackbox Redo branch.
+            store.invalidateSessionRedoForNativeBranch()
+            return
+        }
+        if store.sessionUndoManager.canRedo {
+            store.redoLastSessionAction()
+            return
+        }
+        guard let activeManager = activeResponderUndoManager(), activeManager.canRedo else { return }
+        activeManager.redo()
+    }
+
+    private func activeResponderUndoManager() -> UndoManager? {
+        injectedActiveResponderUndoManager?()
+            ?? store.primaryWindowActiveResponderUndoManager()
+    }
+}
+
+/// Gives the single primary window an AppKit close delegate without moving
+/// editor state out of SwiftUI. The delegate preserves SwiftUI's existing
+/// window delegate through Objective-C forwarding.
+private struct WindowCloseGuardBinding: ViewModifier {
+    let appDelegate: AppDelegate
+    @ObservedObject var store: LogbookStore
+
+    func body(content: Content) -> some View {
+        content.background {
+            WindowCloseGuardView { window in
+                appDelegate.bind(window: window, store: store)
+            }
+            .frame(width: 0, height: 0)
+        }
+    }
+}
+
+private struct WindowCloseGuardView: NSViewRepresentable {
+    let bind: @MainActor (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> WindowCloseGuardNSView {
+        WindowCloseGuardNSView(bind: bind)
+    }
+
+    func updateNSView(_ nsView: WindowCloseGuardNSView, context: Context) {
+        nsView.bind = bind
+        nsView.bindIfPossible()
+    }
+}
+
+@MainActor
+private final class WindowCloseGuardNSView: NSView {
+    var bind: @MainActor (NSWindow) -> Void
+
+    init(bind: @escaping @MainActor (NSWindow) -> Void) {
+        self.bind = bind
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        bindIfPossible()
+    }
+
+    func bindIfPossible() {
+        guard let window else { return }
+        bind(window)
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    enum UnsavedDraftAlertContext: Equatable {
+        case close
+        case quit
+    }
+
+    private weak var store: LogbookStore?
+    private weak var guardedWindow: NSWindow?
+    // NSWindow does not retain its delegate. Keep SwiftUI's original delegate
+    // alive while this guard forwards the callbacks it does not implement.
+    private var forwardedWindowDelegate: (any NSWindowDelegate)?
+    private weak var pendingWindowClose: NSWindow?
+    private weak var approvedWindowClose: NSWindow?
+    private var isTerminationReplyPending = false
+
+    func bind(window: NSWindow, store: LogbookStore) {
+        // Capture the real AppKit window manager before replacing SwiftUI's
+        // delegate. A one-shot SwiftUI environment lookup can be nil or
+        // provisional while the hosted window is still connecting, leaving
+        // operation Undo registered on a manager the responder chain never
+        // visits.
+        let windowUndoManager = window.undoManager
+        self.store = store
+        guard guardedWindow !== window else { return }
+        if let guardedWindow, guardedWindow.delegate === self {
+            guardedWindow.delegate = forwardedWindowDelegate
+        }
+        guardedWindow = window
+        forwardedWindowDelegate = window.delegate
+        window.delegate = self
+        store.attachWindowUndoManager(windowUndoManager, window: window)
+    }
+
+    override func responds(to selector: Selector!) -> Bool {
+        super.responds(to: selector)
+            || (forwardedWindowDelegate?.responds(to: selector) ?? false)
+    }
+
+    override func forwardingTarget(for selector: Selector!) -> Any? {
+        if forwardedWindowDelegate?.responds(to: selector) == true {
+            return forwardedWindowDelegate
+        }
+        return super.forwardingTarget(for: selector)
+    }
+
+    /// AppKit asks the window delegate for its operation Undo manager after an
+    /// active field editor has had first refusal. This keeps native text Undo
+    /// intact while making Blackbox's durable suggestion/Trash actions
+    /// reachable through the standard Edit > Undo command and Command-Z.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        store?.sessionUndoManager
+            ?? forwardedWindowDelegate?.windowWillReturnUndoManager?(window)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.appearance = NSAppearance(named: .darkAqua)
         if AppSnapshotRunner.runIfRequested() {
             return
         }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        UITestLaunchConfiguration.configureApplicationIfRequested()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store, store.isDraftDirty else { return .terminateNow }
+        guard pendingWindowClose == nil else { return .terminateCancel }
+        guard !isTerminationReplyPending else { return .terminateLater }
+
+        let alert = Self.unsavedDraftAlert(for: .quit)
+        guard let window = sender.keyWindow ?? sender.mainWindow else {
+            return Self.terminationReply(for: alert.runModal()) {
+                store.saveDraft()
+            }
+        }
+
+        isTerminationReplyPending = true
+        alert.beginSheetModal(for: window) { [weak self, weak store] response in
+            guard let self else { return }
+            let reply = store.map { store in
+                Self.terminationReply(for: response) { store.saveDraft() }
+            } ?? .terminateCancel
+            self.isTerminationReplyPending = false
+            sender.reply(toApplicationShouldTerminate: reply == .terminateNow)
+        }
+        return .terminateLater
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if approvedWindowClose === sender {
+            approvedWindowClose = nil
+            return forwardedWindowDelegate?.windowShouldClose?(sender) ?? true
+        }
+        guard let store, store.isDraftDirty else {
+            return forwardedWindowDelegate?.windowShouldClose?(sender) ?? true
+        }
+        guard pendingWindowClose == nil else { return false }
+
+        pendingWindowClose = sender
+        Self.unsavedDraftAlert(for: .close).beginSheetModal(for: sender) { [weak self, weak store, weak sender] response in
+            guard let self else { return }
+            self.pendingWindowClose = nil
+            guard let sender, let store else { return }
+
+            switch response {
+            case .alertFirstButtonReturn:
+                guard store.saveDraft() else { return }
+            case .alertThirdButtonReturn:
+                store.discardDraftForWindowClose()
+            default:
+                return
+            }
+
+            self.approvedWindowClose = sender
+            sender.performClose(nil)
+        }
+        return false
+    }
+
+    static func terminationReply(
+        for response: NSApplication.ModalResponse,
+        saveDraft: () -> Bool
+    ) -> NSApplication.TerminateReply {
+        switch response {
+        case .alertFirstButtonReturn:
+            return saveDraft() ? .terminateNow : .terminateCancel
+        case .alertThirdButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+
+    static func unsavedDraftAlert(for context: UnsavedDraftAlertContext) -> NSAlert {
+        let action = context == .close ? "Close" : "Quit"
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unsaved Draft"
+        alert.informativeText = "This draft has changes that have not been saved. Blackbox will not write or discard them unless you choose an action."
+        alert.addButton(withTitle: "Save Draft & \(action)")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Discard Changes & \(action)")
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+        alert.buttons[2].hasDestructiveAction = true
+        return alert
     }
 }
 
@@ -60,22 +331,73 @@ final class LogbookStore: ObservableObject {
     @Published var selectedImportIDs = Set<UUID>()
     @Published var summary = LogbookSummary()
     @Published var compliance = ComplianceSnapshot()
-    @Published var logTenComparison = LogTenComparisonSnapshot()
+    @Published var logTenComparisonState: LogTenComparisonState = .idle
     @Published var recency = RecencySnapshot()
     @Published var duplicateGroups: [DuplicateFlightGroup] = []
     @Published var airportOverrides: [AirportOverride] = []
     @Published var searchText = ""
+    @Published var searchFocusRequest = 0
+    @Published var flightQuery = FlightQuery()
+    @Published private(set) var availableAircraftIDs: [String] = []
+    @Published private(set) var availableAircraftTypes: [String] = []
+    @Published private(set) var availablePilotFunctions: [String] = []
+    @Published private(set) var availableOperations: [String] = []
+    @Published private(set) var availableEntryKinds: [String] = []
+    @Published var savedAnalysisGroups: [SavedAnalysisGroup] = []
+    @Published var currencyLandingLimit: Int {
+        didSet { UserDefaults.standard.set(currencyLandingLimit, forKey: "Blackbox.currencyLandingLimit") }
+    }
+    @Published var currencyLookbackDays: Int {
+        didSet { UserDefaults.standard.set(currencyLookbackDays, forKey: "Blackbox.currencyLookbackDays") }
+    }
     @Published var draftFlight: FlightEntry?
+    @Published var validationReport = FlightValidationReport()
+    @Published var flightSuggestions: [FlightSuggestion] = []
+    @Published var selectedSuggestionIDs = Set<String>()
+    @Published var pendingImportPlan: ImportPlan?
+    @Published var pendingRestorePlan: RestorePlan?
+    @Published var upgradePreflight: UpgradePreflight?
+    @Published var operationBatches: [OperationBatch] = []
+    @Published var trashItems: [TrashItem] = []
+    @Published var flightRevisions: [FlightRevision] = []
+    @Published var historyQuery = HistoryQuery()
+    @Published var historyRelatedFlightIDs = Set<Int64>()
+    @Published var requestedHistoryDestination: HistoryDestination?
+    @Published var showFinaliseConfirmation = false
+    @Published var showTrashConfirmation = false
+    @Published var showDiscardConfirmation = false
+    @Published var showExportConfirmation = false
+    @Published var pendingSelectionID: Int64?
+    @Published var pendingSection: AppSection?
+    @Published var pendingStartNew = false
+    private var pendingSearchFocus = false
+    @Published var isDraftDirty = false
     @Published var statusMessage = "Loading records..."
     @Published var lastExport: (csv: URL, html: URL)?
     @Published var lastBackup: BackupResult?
+    @Published var lastBackupVerification: OperationVerification?
+    @Published var lastVerifiedBackupURL: URL?
+    @Published var selectedExportFolder: URL?
+    @Published var selectedBackupFolder: URL?
+    @Published var folderAccessMessage: String?
     @Published var backupPassphrase = ""
     @Published var airportOverride = AirportOverride(identifier: "", name: "", latitude: 0, longitude: 0)
+    @Published private(set) var canUndoSessionAction = false
+    @Published private(set) var canRedoSessionAction = false
+    @Published private(set) var undoCommandTitle = "Undo"
+    @Published private(set) var redoCommandTitle = "Redo"
     @Published var lastEntryKind: String {
         didSet { UserDefaults.standard.set(lastEntryKind, forKey: "OpenPilotLogbook.lastEntryKind") }
     }
-    private var autoSaveTask: Task<Void, Never>?
-    private var isPersistingDraft = false
+    private var persistedDraft: FlightEntry?
+    private var pendingExportFolder: URL?
+    private let folderAccessStore: FolderAccessStore
+    private let syntheticExportFolderSelection: @MainActor () -> URL?
+    private let migrationAuditRecorder: ((OperationBatch) throws -> Void)?
+    private(set) var sessionUndoManager: UndoManager
+    private let shouldAttachWindowUndoManager: Bool
+    private weak var sessionUndoWindow: NSWindow?
+    private var draftContextID = UUID()
 
     var visibleRoutes: [MapRoute] {
         guard !selectedRouteFlightIDs.isEmpty else { return routes }
@@ -89,20 +411,74 @@ final class LogbookStore: ObservableObject {
         }
     }
 
+    var canSaveDraft: Bool { draftFlight?.recordState == .draft && isDraftDirty }
+    var canFinalise: Bool { draftFlight?.recordState == .draft }
+    var exportPreviewFlights: [FlightEntry] {
+        var query = flightQuery
+        query.recordStates = [.finalised]
+        return (try? repository.flights(query: query)) ?? []
+    }
+
     let repository: LogbookRepository
     let paths: LogbookPaths
+    let platformServices: any PlatformServices
 
-    init(paths: LogbookPaths = .applicationSupport) {
+    init(
+        paths: LogbookPaths = .applicationSupport,
+        platformServices: (any PlatformServices)? = nil,
+        folderAccessStore: FolderAccessStore? = nil,
+        undoManager: UndoManager? = nil,
+        migrationAuditRecorder: ((OperationBatch) throws -> Void)? = nil,
+        syntheticExportFolderSelection: @escaping @MainActor () -> URL? = {
+            UITestLaunchConfiguration.syntheticFolderSelectionForCurrentLaunch()
+        }
+    ) {
         self.paths = paths
-        self.repository = LogbookRepository(paths: paths)
+        self.repository = LogbookRepository(
+            paths: paths,
+            allowsLiveLogTenDiscovery: UITestLaunchConfiguration.allowsLiveLogTenDiscoveryForCurrentLaunch()
+        )
+        self.platformServices = platformServices ?? MacPlatformServices()
+        self.folderAccessStore = folderAccessStore ?? FolderAccessStore()
+        self.syntheticExportFolderSelection = syntheticExportFolderSelection
+        self.migrationAuditRecorder = migrationAuditRecorder
+        self.shouldAttachWindowUndoManager = undoManager == nil
+        let resolvedUndoManager = undoManager ?? UndoManager()
+        resolvedUndoManager.groupsByEvent = false
+        resolvedUndoManager.levelsOfUndo = 100
+        self.sessionUndoManager = resolvedUndoManager
         self.lastEntryKind = UserDefaults.standard.string(forKey: "OpenPilotLogbook.lastEntryKind") ?? "Flight"
+        self.currencyLandingLimit = UserDefaults.standard.object(forKey: "Blackbox.currencyLandingLimit") as? Int ?? 3
+        self.currencyLookbackDays = UserDefaults.standard.object(forKey: "Blackbox.currencyLookbackDays") as? Int ?? 90
+        if let data = UserDefaults.standard.data(forKey: "Blackbox.savedAnalysisGroups"),
+           let groups = try? JSONDecoder().decode([SavedAnalysisGroup].self, from: data) {
+            self.savedAnalysisGroups = groups
+        }
+        switch self.folderAccessStore.resolve(.exports) {
+        case .available(let url): self.selectedExportFolder = url
+        case .stale: self.folderAccessMessage = "The saved export folder is no longer available. Choose it again."
+        case .missing: break
+        }
+        switch self.folderAccessStore.resolve(.backups) {
+        case .available(let url): self.selectedBackupFolder = url
+        case .stale: self.folderAccessMessage = "The saved backup folder is no longer available. Choose it again."
+        case .missing: break
+        }
         refresh()
     }
 
     func refresh() {
         do {
             try repository.bootstrapIfNeeded()
-            flights = try repository.flights(search: searchText)
+            _ = try repository.recoverPendingOperationAudits()
+            flightQuery.text = searchText
+            let filterUniverse = try repository.flights(query: FlightQuery(recordStates: Set(FlightRecordState.allCases)))
+            availableAircraftIDs = uniqueValues(\.aircraftID, in: filterUniverse)
+            availableAircraftTypes = uniqueValues(\.aircraftType, in: filterUniverse)
+            availablePilotFunctions = uniqueValues(\.pilotFunction, in: filterUniverse)
+            availableOperations = uniqueValues(\.operation, in: filterUniverse)
+            availableEntryKinds = uniqueValues(\.entryKind, in: filterUniverse)
+            flights = try repository.flights(query: flightQuery)
             aircraft = try repository.aircraftSummaries()
             typeSummaries = try repository.typeSummaries()
             people = try repository.personSummaries()
@@ -114,38 +490,157 @@ final class LogbookStore: ObservableObject {
             recency = try repository.recencySnapshot()
             duplicateGroups = try repository.duplicateFlightGroups()
             airportOverrides = try repository.airportOverrides()
+            operationBatches = try repository.operationBatches()
+            restoreLastVerifiedBackupStatus(from: operationBatches)
+            trashItems = try repository.trash()
+            flightRevisions = try repository.history()
             if selectedFlightID == nil, let first = flights.first {
                 selectedFlightID = first.id
                 selectedRouteFlightIDs = []
                 draftFlight = first
+                persistedDraft = first
             } else if let id = selectedFlightID {
                 draftFlight = try repository.flight(id: id)
+                persistedDraft = draftFlight
             }
+            updateDraftDiagnostics()
+            isDraftDirty = false
             statusMessage = "Loaded \(summary.flightCount) flights."
+        } catch LogbookRepositoryError.upgradeRequired(let preflight) {
+            upgradePreflight = preflight
+            statusMessage = "Review the backup and schema upgrade before opening this logbook."
         } catch {
             statusMessage = "Record load failed: \(error)"
         }
     }
 
     func refreshLogTenComparison() {
-        do {
-            logTenComparison = try repository.logTenComparisonSnapshot()
+        logTenComparisonState = .loading
+        logTenComparisonState = repository.logTenComparisonState()
+        switch logTenComparisonState {
+        case .loaded:
             statusMessage = "Compared LogTen Pro with Blackbox."
-        } catch {
-            statusMessage = "Comparison failed: \(error)"
+        case .empty:
+            statusMessage = "The LogTen source contains no flight records."
+        case .unavailable(let message), .failed(let message):
+            statusMessage = "Comparison failed: \(message)"
+        case .idle, .loading:
+            break
         }
     }
 
     func applySearch() {
         do {
-            flights = try repository.flights(search: searchText)
+            flightQuery.text = searchText
+            flights = try repository.flights(query: flightQuery)
             statusMessage = searchText.isEmpty ? "Showing all flights." : "Filtered to \(flights.count) flights."
         } catch {
             statusMessage = "Search failed: \(error)"
         }
     }
 
+    func requestSearchFocus() {
+        if selectedSection == .flights {
+            searchFocusRequest += 1
+            return
+        }
+        if selectedSection != .flights {
+            requestSection(.flights)
+        }
+        if isDraftDirty {
+            pendingSearchFocus = true
+        } else {
+            searchFocusRequest += 1
+        }
+    }
+
+    func applyFlightQuery(_ query: FlightQuery, message: String? = nil) {
+        guard !isDraftDirty else {
+            statusMessage = "Save or discard the current draft before changing filters."
+            return
+        }
+        flightQuery = query
+        searchText = query.text
+        refresh()
+        if let message { statusMessage = message }
+    }
+
+    func resetFlightFilters() {
+        applyFlightQuery(FlightQuery(), message: "Reset all flight filters.")
+    }
+
+    private func uniqueValues(_ keyPath: KeyPath<FlightEntry, String>, in source: [FlightEntry]) -> [String] {
+        Array(Set(source.map { $0[keyPath: keyPath] }.filter { !$0.isEmpty })).sorted()
+    }
+
+    func saveAnalysisGroup(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        savedAnalysisGroups.append(SavedAnalysisGroup(
+            name: trimmed,
+            query: flightQuery,
+            landingLimit: currencyLandingLimit,
+            lookbackDays: currencyLookbackDays
+        ))
+        persistAnalysisGroups()
+        statusMessage = "Saved analysis group ‘\(trimmed)’ locally."
+    }
+
+    func applyAnalysisGroup(_ group: SavedAnalysisGroup) {
+        if let value = group.landingLimit { currencyLandingLimit = value }
+        if let value = group.lookbackDays { currencyLookbackDays = value }
+        applyFlightQuery(group.query, message: "Applied saved analysis group ‘\(group.name)’.")
+    }
+
+    func deleteAnalysisGroups(at offsets: IndexSet) {
+        savedAnalysisGroups.remove(atOffsets: offsets)
+        persistAnalysisGroups()
+    }
+
+    private func persistAnalysisGroups() {
+        if let data = try? JSONEncoder().encode(savedAnalysisGroups) {
+            UserDefaults.standard.set(data, forKey: "Blackbox.savedAnalysisGroups")
+        }
+    }
+
+    func requestSection(_ section: AppSection?) {
+        guard section != selectedSection else { return }
+        if section == .history {
+            historyQuery.flightID = nil
+            historyRelatedFlightIDs.removeAll()
+            requestedHistoryDestination = .trash
+        }
+        if isDraftDirty {
+            pendingSection = section
+            showDiscardConfirmation = true
+        } else {
+            selectedSection = section
+        }
+    }
+
+    func drillDown(_ query: FlightQuery, description: String) {
+        applyFlightQuery(query, message: "Showing flights for \(description).")
+        if !isDraftDirty { selectedSection = .flights }
+    }
+
     func selectFlight(id: Int64?) {
+        // Table(selection:) can echo a programmatic selection change back
+        // through its onChange callback on a later view-update pass. Treat a
+        // same-record echo as a no-op: if the editor became dirty in between,
+        // presenting the unsaved-navigation alert would block the action the
+        // pilot actually chose (for example, finalising a new amendment).
+        guard id != selectedFlightID else { return }
+        if isDraftDirty {
+            pendingSelectionID = id
+            showDiscardConfirmation = true
+            return
+        }
+        selectFlightImmediately(id: id)
+    }
+
+    func selectFlightImmediately(id: Int64?, preservingSessionUndo: Bool = false) {
+        if !preservingSessionUndo { clearSessionUndoForContextChange() }
+        draftContextID = UUID()
         selectedFlightID = id
         guard let id else {
             draftFlight = nil
@@ -155,6 +650,9 @@ final class LogbookStore: ObservableObject {
         selectedRouteFlightIDs = [id]
         do {
             draftFlight = try repository.flight(id: id)
+            persistedDraft = draftFlight
+            updateDraftDiagnostics()
+            isDraftDirty = false
         } catch {
             statusMessage = "Could not load flight \(id): \(error)"
         }
@@ -165,17 +663,30 @@ final class LogbookStore: ObservableObject {
         guard !newSelection.isEmpty else { return }
         let id = newSelection.subtracting(oldSelection).first ?? newSelection.sorted().last
         guard let id else { return }
-        selectedFlightID = id
-        do {
-            draftFlight = try repository.flight(id: id)
-        } catch {
-            statusMessage = "Could not load flight \(id): \(error)"
-        }
+        selectFlight(id: id)
     }
 
     func showFlight(_ flight: FlightEntry) {
-        selectedSection = .flights
-        selectFlight(id: flight.id)
+        if isDraftDirty {
+            pendingSection = .flights
+            pendingSelectionID = flight.id
+            showDiscardConfirmation = true
+        } else {
+            selectedSection = .flights
+            selectFlightImmediately(id: flight.id)
+        }
+    }
+
+    func showFlight(id: Int64) {
+        do {
+            guard let flight = try repository.flight(id: id) else {
+                statusMessage = "Flight \(id) is no longer available."
+                return
+            }
+            showFlight(flight)
+        } catch {
+            statusMessage = "Could not open flight \(id): \(error)"
+        }
     }
 
     func toggleRouteSelection(for flight: FlightEntry) {
@@ -185,12 +696,7 @@ final class LogbookStore: ObservableObject {
         } else {
             selectedRouteFlightIDs.insert(id)
         }
-        selectedFlightID = id
-        do {
-            draftFlight = try repository.flight(id: id)
-        } catch {
-            statusMessage = "Could not load flight \(id): \(error)"
-        }
+        selectFlight(id: id)
     }
 
     func showAllRoutes() {
@@ -203,7 +709,7 @@ final class LogbookStore: ObservableObject {
         guard !selected.isEmpty else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        let type = NSPasteboard.PasteboardType("local.codex.Blackbox.flightEntries")
+        let type = NSPasteboard.PasteboardType("uk.co.blackbox.logbook.flightEntries")
         if let data = try? JSONEncoder().encode(selected) {
             pasteboard.setData(data, forType: type)
         }
@@ -223,7 +729,7 @@ final class LogbookStore: ObservableObject {
     }
 
     func pasteFlights() {
-        let type = NSPasteboard.PasteboardType("local.codex.Blackbox.flightEntries")
+        let type = NSPasteboard.PasteboardType("uk.co.blackbox.logbook.flightEntries")
         guard let data = NSPasteboard.general.data(forType: type),
               let copied = try? JSONDecoder().decode([FlightEntry].self, from: data),
               !copied.isEmpty
@@ -237,12 +743,15 @@ final class LogbookStore: ObservableObject {
                 flight.id = nil
                 flight.sourcePK = nil
                 flight.locked = false
+                flight.recordState = .draft
+                flight.amendsFlightID = nil
+                flight.supersededByFlightID = nil
                 flight.remarks = flight.remarks.replacingOccurrences(
                     of: #"^Sector\s+\d+\s*(?:\((.*)\))?$"#,
                     with: "$1",
                     options: .regularExpression
                 )
-                ids.insert(try repository.save(flight))
+                ids.insert(try repository.saveDraft(flight, origin: "paste"))
             }
             refresh()
             selectedRouteFlightIDs = ids
@@ -253,157 +762,316 @@ final class LogbookStore: ObservableObject {
     }
 
     func startNewFlight() {
+        if isDraftDirty {
+            pendingStartNew = true
+            showDiscardConfirmation = true
+            return
+        }
+        startNewFlightImmediately()
+    }
+
+    private func startNewFlightImmediately() {
+        clearSessionUndoForContextChange()
+        draftContextID = UUID()
         selectedSection = .flights
         selectedFlightID = nil
         selectedRouteFlightIDs = []
-        draftFlight = normalizedDraft(FlightEntry(
+        draftFlight = FlightEntry(
             date: Date(),
             operation: "MP",
             entryKind: lastEntryKind,
             pilotFunction: lastEntryKind == "Simulator" ? "FSTD" : "Co-pilot"
-        ))
+        )
+        persistedDraft = nil
+        updateDraftDiagnostics()
+        isDraftDirty = false
     }
 
     func duplicateCurrentFlight() {
         guard var draftFlight else { return }
+        clearSessionUndoForContextChange()
+        draftContextID = UUID()
         draftFlight.id = nil
         draftFlight.sourcePK = nil
         draftFlight.locked = false
+        draftFlight.recordState = .draft
+        draftFlight.amendsFlightID = nil
+        draftFlight.supersededByFlightID = nil
         draftFlight.date = Date()
         self.draftFlight = draftFlight
-        normalizeDraft()
         selectedFlightID = nil
         selectedRouteFlightIDs = []
+        persistedDraft = nil
+        draftDidChange()
     }
 
-    func unlockSelectedFlight() {
+    func beginAmendment() {
         guard let selectedFlightID else { return }
         do {
-            try repository.unlockFlight(id: selectedFlightID)
+            let id = try repository.beginAmendment(of: selectedFlightID)
             refresh()
-            statusMessage = "Entry unlocked. Changes will save automatically."
+            selectFlightImmediately(id: id)
+            announce("Created an amendment draft. The finalised original is unchanged.")
         } catch {
-            statusMessage = "Could not unlock entry: \(error)"
+            announce("Could not create amendment: \(error)")
         }
     }
 
-    func lockSelectedFlight() {
-        guard var draftFlight else { return }
-        autoSaveTask?.cancel()
-        draftFlight.locked = false
+    @discardableResult
+    func saveDraft() -> Bool {
+        guard let draftFlight, draftFlight.recordState == .draft else { return false }
+        if UITestLaunchConfiguration.shouldInjectSaveFailureForCurrentLaunch() {
+            announce("Could not save draft: injected synthetic persistence failure")
+            return false
+        }
         do {
-            let id = try repository.save(draftFlight)
-            try repository.lockFlight(id: id)
+            let id = try repository.saveDraft(draftFlight)
             selectedFlightID = id
             refresh()
-            statusMessage = "Entry saved and locked."
+            selectFlightImmediately(id: id)
+            announce("Draft saved")
+            NSApp.keyWindow?.undoManager?.setActionName("Save Draft")
+            return true
         } catch {
-            statusMessage = "Could not lock entry: \(error)"
+            announce("Could not save draft: \(error)")
+            return false
         }
     }
 
-    func scheduleDraftAutosave() {
-        guard let draftFlight, !draftFlight.locked, draftFlight.totalMinutes > 0 else { return }
-        autoSaveTask?.cancel()
-        autoSaveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 450_000_000)
-            guard !Task.isCancelled else { return }
-            self?.persistDraftAutomatically()
-        }
+    func saveDraftAndContinue() {
+        guard saveDraft() else { return }
+        discardChangesAndContinue()
     }
 
-    private func persistDraftAutomatically() {
-        guard !isPersistingDraft, let draftFlight, !draftFlight.locked, draftFlight.totalMinutes > 0 else { return }
-        isPersistingDraft = true
-        defer { isPersistingDraft = false }
+    func requestFinalise() {
+        guard canFinalise else { return }
+        updateDraftDiagnostics()
+        guard let draftFlight else { return }
         do {
-            let id = try repository.save(draftFlight)
+            validationReport = try repository.validationReport(for: draftFlight)
+            guard !validationReport.hasErrors else {
+                announce("Finalisation blocked. Resolve the structural validation errors first")
+                return
+            }
+        } catch {
+            announce("Finalisation blocked because amendment integrity could not be verified: \(error)")
+            return
+        }
+        showFinaliseConfirmation = true
+    }
+
+    func confirmFinalise() {
+        guard let draftFlight else { return }
+        do {
+            let id = try (draftFlight.amendsFlightID == nil
+                ? repository.finalise(draftFlight, acknowledgeWarnings: true)
+                : repository.finaliseAmendment(draftFlight, acknowledgeWarnings: true))
             selectedFlightID = id
             refresh()
-            statusMessage = "Changes saved."
+            selectFlightImmediately(id: id)
+            announce(draftFlight.amendsFlightID == nil ? "Entry finalised" : "Amendment finalised; the original is preserved as superseded")
         } catch {
-            statusMessage = "Could not save changes: \(error)"
+            announce("Could not finalise entry: \(error)")
         }
     }
 
     func setDraftEntryKind(_ kind: String) {
         lastEntryKind = kind == "Simulator" ? "Simulator" : "Flight"
         draftFlight?.entryKind = lastEntryKind
-        normalizeDraft()
+        draftDidChange()
     }
 
-    func normalizeDraft() {
-        guard let draftFlight else { return }
-        self.draftFlight = normalizedDraft(draftFlight)
+    func draftDidChange() {
+        isDraftDirty = draftFlight != persistedDraft
+        updateDraftDiagnostics()
     }
 
-    private func normalizedDraft(_ input: FlightEntry) -> FlightEntry {
-        var flight = input
-        flight.entryKind = flight.entryKind == "Simulator" ? "Simulator" : "Flight"
-        flight.signatureName = ""
-        flight.signatureReference = ""
-        if flight.crewNameList.count >= 2 { flight.operation = "MP" }
-        if flight.entryKind == "Simulator" {
-            flight.pilotFunction = "FSTD"
-            flight.fstdMinutes = flight.totalMinutes
-            flight.picMinutes = 0
-            flight.picDayMinutes = 0
-            flight.picNightMinutes = 0
-            flight.picusMinutes = 0
-            flight.picusDayMinutes = 0
-            flight.picusNightMinutes = 0
-            flight.copilotMinutes = 0
-            flight.copilotDayMinutes = 0
-            flight.copilotNightMinutes = 0
-            flight.instrumentMinutes = 0
-            flight.crossCountryMinutes = 0
-            flight.pilotFlying = false
-            flight.dayTakeoffs = 0
-            flight.nightTakeoffs = 0
-            flight.totalTakeoffs = 0
-            flight.dayLandings = 0
-            flight.nightLandings = 0
-            flight.totalLandings = 0
+    /// Discards only the editor's in-memory changes before the primary window
+    /// closes. The last persisted value is restored verbatim; a never-saved new
+    /// or duplicated draft is removed from the session. This intentionally does
+    /// not call the repository.
+    func discardDraftForWindowClose() {
+        clearSessionUndoForContextChange()
+        draftContextID = UUID()
+        draftFlight = persistedDraft
+        selectedSuggestionIDs.removeAll()
+        pendingSelectionID = nil
+        pendingSection = nil
+        pendingStartNew = false
+        pendingSearchFocus = false
+        showDiscardConfirmation = false
+        showFinaliseConfirmation = false
+        showTrashConfirmation = false
+
+        if let persistedID = persistedDraft?.id {
+            selectedFlightID = persistedID
+            selectedRouteFlightIDs = [persistedID]
         } else {
-            flight.fstdMinutes = 0
-            if flight.instrumentMinutes == 0 { flight.instrumentMinutes = flight.totalMinutes }
-            if flight.crossCountryMinutes == 0 { flight.crossCountryMinutes = flight.totalMinutes }
-            if flight.pilotFlying {
-                flight.pilotFunction = "PICUS"
-                flight.picMinutes = 0
-                flight.picNightMinutes = 0
-                flight.picDayMinutes = 0
-                flight.picusMinutes = flight.totalMinutes
-                flight.picusNightMinutes = min(flight.totalMinutes, flight.nightMinutes)
-                flight.picusDayMinutes = max(0, flight.picusMinutes - flight.picusNightMinutes)
-                flight.copilotMinutes = 0
-                flight.copilotDayMinutes = 0
-                flight.copilotNightMinutes = 0
-            } else {
-                flight.pilotFunction = "Co-pilot"
-                flight.picMinutes = 0
-                flight.picDayMinutes = 0
-                flight.picNightMinutes = 0
-                flight.picusMinutes = 0
-                flight.picusDayMinutes = 0
-                flight.picusNightMinutes = 0
-                flight.copilotMinutes = flight.totalMinutes
-                flight.copilotNightMinutes = min(flight.totalMinutes, flight.nightMinutes)
-                flight.copilotDayMinutes = max(0, flight.totalMinutes - flight.copilotNightMinutes)
-            }
-            flight.totalTakeoffs = flight.dayTakeoffs + flight.nightTakeoffs
-            flight.totalLandings = flight.dayLandings + flight.nightLandings
+            selectedFlightID = nil
+            selectedRouteFlightIDs = []
         }
-        flight.crewRoles = FlightEntry.crewRolesText(
-            from: FlightEntry.parseCrewRoles(flight.crewRoles),
-            names: flight.crewNameList
-        )
-        return flight
+
+        updateDraftDiagnostics()
+        isDraftDirty = false
+    }
+
+    func observedDraftDidChange() {
+        draftDidChange()
+    }
+
+    func acceptSuggestion(_ suggestion: FlightSuggestion) {
+        guard suggestion.isActionable, let draftFlight else { return }
+        let before = draftFlight
+        let after = FlightSuggestionEngine.applying(suggestion, to: draftFlight)
+        guard after != before else { return }
+        self.draftFlight = after
+        draftDidChange()
+        let contextID = draftContextID
+        registerSessionUndo(actionName: "Accept Suggestion") { store in
+            store.restoreSuggestionFields(
+                from: before,
+                expecting: after,
+                fields: [suggestion.field],
+                contextID: contextID,
+                actionName: "Accept Suggestion",
+                message: "Undid \(suggestion.title) suggestion",
+                inverseMessage: "Redid \(suggestion.title) suggestion"
+            )
+        }
+        announce("Accepted \(suggestion.title) suggestion")
+    }
+
+    func acceptSelectedSuggestions() {
+        guard let draftFlight else { return }
+        let batch = repository.prepareSuggestionBatch(for: draftFlight, selectedSuggestionIDs: selectedSuggestionIDs)
+        guard !batch.suggestions.isEmpty else { return }
+        let before = draftFlight
+        let acceptedSuggestions = batch.suggestions.filter {
+            batch.selectedSuggestionIDs.contains($0.id) && $0.isActionable
+        }
+        let fields = acceptedSuggestions.map(\.field)
+        self.draftFlight = repository.applySuggestionBatch(batch, to: draftFlight)
+        guard let after = self.draftFlight, after != before else { return }
+        selectedSuggestionIDs.removeAll()
+        draftDidChange()
+        let contextID = draftContextID
+        registerSessionUndo(actionName: "Accept Selected Suggestions") { store in
+            store.restoreSuggestionFields(
+                from: before,
+                expecting: after,
+                fields: fields,
+                contextID: contextID,
+                actionName: "Accept Selected Suggestions",
+                message: "Undid accepted suggestions",
+                inverseMessage: "Redid accepted suggestions"
+            )
+        }
+        announce("Accepted selected suggestions")
+    }
+
+    private func restoreSuggestionFields(
+        from target: FlightEntry,
+        expecting expectedCurrent: FlightEntry,
+        fields: [FlightSuggestionField],
+        contextID: UUID,
+        actionName: String,
+        message: String,
+        inverseMessage: String
+    ) {
+        guard draftContextID == contextID, let current = draftFlight, current.id == expectedCurrent.id else {
+            announce("Could not \(message.lowercased()): the original draft is no longer open")
+            return
+        }
+        guard fields.allSatisfy({ suggestionField($0, in: current, matches: expectedCurrent) }) else {
+            announce("Could not \(message.lowercased()): an affected field changed afterward")
+            return
+        }
+        var restored = current
+        for field in fields { copySuggestionField(field, from: target, to: &restored) }
+        draftFlight = restored
+        draftDidChange()
+        registerSessionUndo(actionName: actionName) { store in
+            store.restoreSuggestionFields(
+                from: current,
+                expecting: restored,
+                fields: fields,
+                contextID: contextID,
+                actionName: actionName,
+                message: inverseMessage,
+                inverseMessage: message
+            )
+        }
+        announce(message)
+    }
+
+    private func suggestionField(_ field: FlightSuggestionField, in lhs: FlightEntry, matches rhs: FlightEntry) -> Bool {
+        switch field {
+        case .distanceNM: return lhs.distanceNM == rhs.distanceNM
+        case .departureCoordinates: return lhs.departureLatitude == rhs.departureLatitude && lhs.departureLongitude == rhs.departureLongitude
+        case .arrivalCoordinates: return lhs.arrivalLatitude == rhs.arrivalLatitude && lhs.arrivalLongitude == rhs.arrivalLongitude
+        case .nightMinutes: return lhs.nightMinutes == rhs.nightMinutes
+        case .picMinutes:
+            return lhs.picMinutes == rhs.picMinutes && lhs.picDayMinutes == rhs.picDayMinutes && lhs.picNightMinutes == rhs.picNightMinutes
+        case .picusMinutes:
+            return lhs.picusMinutes == rhs.picusMinutes && lhs.picusDayMinutes == rhs.picusDayMinutes && lhs.picusNightMinutes == rhs.picusNightMinutes
+        case .copilotMinutes:
+            return lhs.copilotMinutes == rhs.copilotMinutes && lhs.copilotDayMinutes == rhs.copilotDayMinutes && lhs.copilotNightMinutes == rhs.copilotNightMinutes
+        case .dualMinutes: return lhs.dualMinutes == rhs.dualMinutes
+        case .instructorMinutes: return lhs.instructorMinutes == rhs.instructorMinutes
+        case .fstdMinutes: return lhs.fstdMinutes == rhs.fstdMinutes
+        case .totalTakeoffs: return lhs.totalTakeoffs == rhs.totalTakeoffs
+        case .totalLandings: return lhs.totalLandings == rhs.totalLandings
+        }
+    }
+
+    private func copySuggestionField(_ field: FlightSuggestionField, from source: FlightEntry, to target: inout FlightEntry) {
+        switch field {
+        case .distanceNM: target.distanceNM = source.distanceNM
+        case .departureCoordinates:
+            target.departureLatitude = source.departureLatitude
+            target.departureLongitude = source.departureLongitude
+        case .arrivalCoordinates:
+            target.arrivalLatitude = source.arrivalLatitude
+            target.arrivalLongitude = source.arrivalLongitude
+        case .nightMinutes: target.nightMinutes = source.nightMinutes
+        case .picMinutes:
+            target.picMinutes = source.picMinutes
+            target.picDayMinutes = source.picDayMinutes
+            target.picNightMinutes = source.picNightMinutes
+        case .picusMinutes:
+            target.picusMinutes = source.picusMinutes
+            target.picusDayMinutes = source.picusDayMinutes
+            target.picusNightMinutes = source.picusNightMinutes
+        case .copilotMinutes:
+            target.copilotMinutes = source.copilotMinutes
+            target.copilotDayMinutes = source.copilotDayMinutes
+            target.copilotNightMinutes = source.copilotNightMinutes
+        case .dualMinutes: target.dualMinutes = source.dualMinutes
+        case .instructorMinutes: target.instructorMinutes = source.instructorMinutes
+        case .fstdMinutes: target.fstdMinutes = source.fstdMinutes
+        case .totalTakeoffs: target.totalTakeoffs = source.totalTakeoffs
+        case .totalLandings: target.totalLandings = source.totalLandings
+        }
+    }
+
+    private func updateDraftDiagnostics() {
+        guard let draftFlight else {
+            validationReport = FlightValidationReport()
+            flightSuggestions = []
+            return
+        }
+        validationReport = FlightSuggestionEngine.validationReport(for: draftFlight)
+        flightSuggestions = FlightSuggestionEngine.suggestions(for: draftFlight)
+        selectedSuggestionIDs.formIntersection(Set(flightSuggestions.filter(\.isActionable).map(\.id)))
     }
 
     func importDocuments(urls: [URL]) {
         do {
-            importCandidates = try FlightDocumentImporter.candidates(from: urls, suggestions: suggestions)
+            importCandidates = try urls.flatMap { url in
+                try withScopedAccess(to: url) {
+                    try FlightDocumentImporter.candidates(from: [url], suggestions: suggestions)
+                }
+            }
             selectedImportIDs = Set(importCandidates.map(\.id))
             selectedSection = .imports
             statusMessage = "Found \(importCandidates.count) possible flights. Review before importing."
@@ -418,18 +1086,70 @@ final class LogbookStore: ObservableObject {
             if scoped { url.stopAccessingSecurityScopedResource() }
         }
         do {
-            let count = try repository.replaceWithLogTenDatabase(at: url)
+            pendingImportPlan = try repository.prepareImport(from: url)
+            statusMessage = "Import preview ready. Nothing has been changed."
+        } catch {
+            statusMessage = "LogTen Pro preview failed: \(error)"
+        }
+    }
+
+    func applyPendingImport() {
+        guard let plan = pendingImportPlan else { return }
+        guard planHasSelectedChanges(plan) else {
+            announce("Nothing is selected to import. Choose at least one addition or changed field")
+            return
+        }
+        do {
+            _ = try repository.applyImport(plan)
+            pendingImportPlan = nil
+            importCandidates.removeAll()
+            selectedImportIDs.removeAll()
             selectedFlightID = nil
             selectedRouteFlightIDs = []
             draftFlight = nil
-            importCandidates.removeAll()
-            selectedImportIDs.removeAll()
-            logTenComparison = LogTenComparisonSnapshot()
+            logTenComparisonState = .idle
             refresh()
-            statusMessage = "Imported \(count.formatted()) LogTen Pro flights."
+            announce("Imported \(plan.additions.count) additions and reviewed \(plan.changes.count) changes. No absent records were removed")
+        } catch LogbookRepositoryError.recoveryFailed {
+            pendingImportPlan = nil
+            announce("Import failed and recovery could not be verified. Stop using this database and preserve the diagnostic artifact")
+        } catch LogbookRepositoryError.operationFailedWithVerifiedRecovery(_, let message, let recoveryOutcome) {
+            pendingImportPlan = nil
+            announce("Import failed. \(recoveryOutcome): \(message)")
         } catch {
-            statusMessage = "LogTen Pro import failed: \(error)"
+            // Applying consumes the private source snapshot even on rollback.
+            // Require a fresh read-only preview instead of offering a stale retry.
+            pendingImportPlan = nil
+            announce("Import failed before a recovery outcome could be reported: \(error)")
         }
+    }
+
+    func cancelPendingImport() {
+        guard let plan = pendingImportPlan else { return }
+        repository.discardImportPlan(plan)
+        pendingImportPlan = nil
+        statusMessage = "Import preview cancelled. No records were changed."
+    }
+
+    func planHasSelectedChanges(_ plan: ImportPlan) -> Bool {
+        let includesAddition = plan.additions.contains { flight in
+            guard let sourcePK = flight.sourcePK else { return false }
+            let action = plan.resolutionActions[sourcePK] ?? plan.resultingActions[sourcePK]
+            guard (action == .createDraft || action == .importSeparateDraft),
+                  plan.duplicateDecisions[sourcePK] != .exclude else { return false }
+            return plan.fieldSelections.contains { selection in
+                selection.sourcePK == sourcePK && selection.decision == .include
+            }
+        }
+        let includesChange = plan.changes.contains { change in
+            let action = plan.resolutionActions[change.sourcePK] ?? plan.resultingActions[change.sourcePK]
+            guard action == .updateDraft || action == .createAmendment || action == .importSeparateDraft,
+                  plan.duplicateDecisions[change.sourcePK] != .exclude else { return false }
+            return plan.fieldSelections.contains { selection in
+                selection.sourcePK == change.sourcePK && selection.decision == .include
+            }
+        }
+        return includesAddition || includesChange
     }
 
     func acceptSelectedImports() {
@@ -439,76 +1159,607 @@ final class LogbookStore: ObservableObject {
             return
         }
         do {
-            for candidate in selected {
-                _ = try repository.save(candidate.flight)
-            }
-            importCandidates.removeAll { selectedImportIDs.contains($0.id) }
-            selectedImportIDs.removeAll()
-            refresh()
-            statusMessage = "Imported \(selected.count) reviewed flights."
-        } catch {
-            statusMessage = "Import save failed: \(error)"
-        }
+            pendingImportPlan = try repository.prepareDocumentImport(
+                candidates: selected.map(\.flight),
+                sourceURL: URL(fileURLWithPath: "Reviewed document or OCR batch")
+            )
+            statusMessage = "Document import preview ready. Review every selected field before applying."
+        } catch { statusMessage = "Document import preview failed: \(error)" }
     }
 
     func deleteSelectedFlight() {
         guard let selectedFlightID else { return }
+        guard !isDraftDirty else {
+            announce("Save or discard unsaved changes before moving this draft to Trash")
+            return
+        }
+        guard prepareEditorForContextChange() else {
+            announce("Could not move draft to Trash because the editor could not finish editing")
+            return
+        }
+        guard !isDraftDirty else {
+            announce("Save or discard unsaved changes before moving this draft to Trash")
+            return
+        }
         do {
-            try repository.deleteFlight(id: selectedFlightID)
-            self.selectedFlightID = nil
-            self.selectedRouteFlightIDs.remove(selectedFlightID)
-            self.draftFlight = nil
-            refresh()
-            statusMessage = "Deleted flight."
+            try moveFlightToTrash(id: selectedFlightID, origin: "manual")
+            clearSessionUndoForContextChange()
+            draftContextID = UUID()
+            registerSessionUndo(actionName: "Move Draft to Trash") { store in
+                store.restoreFlightFromTrashForUndo(id: selectedFlightID)
+            }
+            announce("Moved draft to Trash. Choose Undo to restore it")
         } catch {
-            statusMessage = "Delete failed: \(error)"
+            announce("Could not move draft to Trash: \(error)")
         }
     }
 
-    func exportReports() {
+    func restoreFlightFromTrash(id: Int64) {
         do {
-            let allFlights = try repository.flights()
-            lastExport = try ReportExporter.exportCAAResources(flights: allFlights, summary: try repository.summary(), to: paths.backupFolder)
-            statusMessage = "Exported CSV and printable HTML."
+            try repository.restoreFromTrash(id: id)
+            refresh()
+            selectFlightImmediately(id: id)
+            announce("Restored draft from Trash")
         } catch {
+            announce("Could not restore draft: \(error)")
+        }
+    }
+
+    private func restoreFlightFromTrashForUndo(id: Int64) {
+        guard !isDraftDirty else {
+            announce("Could not restore from Undo because another draft has unsaved changes")
+            return
+        }
+        guard prepareEditorForContextChange() else {
+            announce("Could not restore from Undo because the editor could not finish editing")
+            return
+        }
+        guard !isDraftDirty else {
+            announce("Could not restore from Undo because another draft has unsaved changes")
+            return
+        }
+        do {
+            try repository.restoreFromTrash(id: id, origin: "undo")
+            refresh()
+            selectFlightImmediately(id: id, preservingSessionUndo: true)
+            let restoredContextID = draftContextID
+            registerSessionUndo(actionName: "Move Draft to Trash") { store in
+                store.moveFlightToTrashForRedo(id: id, contextID: restoredContextID)
+            }
+            announce("Restored draft from Trash")
+        } catch {
+            announce("Could not restore draft from Undo: \(error)")
+        }
+    }
+
+    private func moveFlightToTrashForRedo(id: Int64, contextID: UUID) {
+        guard draftContextID == contextID, !isDraftDirty, draftFlight?.id == id, selectedFlightID == id else {
+            announce("Could not redo moving the draft because its editor context changed")
+            return
+        }
+        guard prepareEditorForContextChange() else {
+            announce("Could not redo moving the draft because the editor could not finish editing")
+            return
+        }
+        guard draftContextID == contextID, !isDraftDirty, draftFlight?.id == id, selectedFlightID == id else {
+            announce("Could not redo moving the draft because its editor context changed")
+            return
+        }
+        do {
+            try moveFlightToTrash(id: id, origin: "redo")
+            registerSessionUndo(actionName: "Move Draft to Trash") { store in
+                store.restoreFlightFromTrashForUndo(id: id)
+            }
+            announce("Moved draft to Trash")
+        } catch {
+            announce("Could not redo moving draft to Trash: \(error)")
+        }
+    }
+
+    private func moveFlightToTrash(id: Int64, origin: String) throws {
+        try repository.moveToTrash(id: id, origin: origin)
+        if selectedFlightID == id { selectedFlightID = nil }
+        selectedRouteFlightIDs.remove(id)
+        if draftFlight?.id == id { draftFlight = nil }
+        refresh()
+    }
+
+    func undoLastSessionAction() {
+        guard sessionUndoManager.canUndo else { return }
+        sessionUndoManager.undo()
+        updateSessionUndoCommands()
+    }
+
+    func redoLastSessionAction() {
+        guard sessionUndoManager.canRedo else { return }
+        sessionUndoManager.redo()
+        updateSessionUndoCommands()
+    }
+
+    func invalidateSessionRedoForNativeBranch() {
+        guard sessionUndoManager.canRedo,
+              !sessionUndoManager.isUndoing,
+              !sessionUndoManager.isRedoing else { return }
+        sessionUndoManager.removeAllActions()
+        updateSessionUndoCommands()
+    }
+
+    func attachWindowUndoManager(_ undoManager: UndoManager?, window: NSWindow? = nil) {
+        if let window { sessionUndoWindow = window }
+        guard shouldAttachWindowUndoManager, let undoManager, undoManager !== sessionUndoManager else { return }
+        sessionUndoManager.removeAllActions()
+        sessionUndoManager = undoManager
+        sessionUndoManager.levelsOfUndo = 100
+        updateSessionUndoCommands()
+    }
+
+    private func clearSessionUndoForContextChange() {
+        guard !sessionUndoManager.isUndoing, !sessionUndoManager.isRedoing else { return }
+        sessionUndoManager.removeAllActions()
+        clearSecondaryResponderUndoManagers()
+        updateSessionUndoCommands()
+    }
+
+    /// Relinquish the shared AppKit field editor before SwiftUI replaces the
+    /// selected record. Otherwise AppKit can rebind that editor to the newly
+    /// selected flight and leave an older text action above the Blackbox
+    /// operation on the Undo stack.
+    private func prepareEditorForContextChange() -> Bool {
+        guard shouldAttachWindowUndoManager, let window = sessionUndoWindow else { return true }
+        guard window.makeFirstResponder(nil) else { return false }
+        // Controls such as the minute steppers commit buffered text only when
+        // focus leaves. Recompute synchronously before deciding whether this is
+        // still a clean context change; preserve native Undo if it became dirty.
+        draftDidChange()
+        if !isDraftDirty { clearSecondaryResponderUndoManagers() }
+        return true
+    }
+
+    private func registerSessionUndo(actionName: String, action: @escaping (LogbookStore) -> Void) {
+        if !sessionUndoManager.isUndoing, !sessionUndoManager.isRedoing {
+            clearSecondaryResponderUndoManagers()
+        }
+        let startsStandaloneGroup = !sessionUndoManager.isUndoing &&
+            !sessionUndoManager.isRedoing &&
+            sessionUndoManager.groupingLevel == 0
+        if startsStandaloneGroup { sessionUndoManager.beginUndoGrouping() }
+        sessionUndoManager.registerUndo(withTarget: self, handler: action)
+        sessionUndoManager.setActionName(actionName)
+        if startsStandaloneGroup { sessionUndoManager.endUndoGrouping() }
+        if !sessionUndoManager.isUndoing && !sessionUndoManager.isRedoing {
+            updateSessionUndoCommands()
+        }
+    }
+
+    /// Blackbox keeps one durable window manager. If AppKit exposes separate
+    /// responder-local text stacks, clear their older history when a Blackbox
+    /// operation becomes the newest Undo boundary. This includes unfocused
+    /// TextEditor instances as well as the shared field editor.
+    /// Subsequent typing is newer and receives first refusal in the router.
+    private func clearSecondaryResponderUndoManagers() {
+        guard shouldAttachWindowUndoManager, let window = sessionUndoWindow else { return }
+        var candidates = [
+            window.firstResponder?.undoManager,
+            window.fieldEditor(false, for: nil)?.undoManager
+        ]
+        if let contentView = window.contentView {
+            candidates.append(contentsOf: textUndoManagers(in: contentView).map(Optional.some))
+        }
+        var cleared = Set<ObjectIdentifier>()
+        for manager in candidates.compactMap({ $0 }) where manager !== sessionUndoManager {
+            guard cleared.insert(ObjectIdentifier(manager)).inserted else { continue }
+            manager.removeAllActions()
+        }
+    }
+
+    private func textUndoManagers(in view: NSView) -> [UndoManager] {
+        var managers: [UndoManager] = []
+        if let textView = view as? NSTextView, let undoManager = textView.undoManager {
+            managers.append(undoManager)
+        }
+        for subview in view.subviews {
+            managers.append(contentsOf: textUndoManagers(in: subview))
+        }
+        return managers
+    }
+
+    func primaryWindowActiveResponderUndoManager() -> UndoManager? {
+        guard let window = sessionUndoWindow else { return nil }
+        return window.firstResponder?.undoManager
+            ?? window.fieldEditor(false, for: nil)?.undoManager
+    }
+
+    private func updateSessionUndoCommands() {
+        canUndoSessionAction = sessionUndoManager.canUndo
+        canRedoSessionAction = sessionUndoManager.canRedo
+        undoCommandTitle = sessionUndoManager.undoMenuItemTitle
+        redoCommandTitle = sessionUndoManager.redoMenuItemTitle
+    }
+
+    func refreshHistory() {
+        do {
+            trashItems = try repository.trash()
+            operationBatches = try repository.operationBatches()
+            flightRevisions = try repository.history()
+        } catch { statusMessage = "History refresh failed: \(error)" }
+    }
+
+    func restoreTrash(ids: Set<Int64>) {
+        do {
+            try repository.restoreFromTrash(ids: ids)
+            refresh()
+            refreshHistory()
+            announce("Restored \(ids.count) draft\(ids.count == 1 ? "" : "s") from Trash")
+        } catch { announce("Could not restore selected drafts: \(error)") }
+    }
+
+    func exportReports(to folder: URL) {
+        let attemptedCount = exportPreviewFlights.count
+        let attemptedMinutes = LogbookSummary(flights: exportPreviewFlights).totalMinutes
+        do {
+            var exportQuery = flightQuery
+            exportQuery.recordStates = [.finalised]
+            let finalised = try repository.flights(query: exportQuery)
+            lastExport = try folderAccessStore.withAccess(to: folder) {
+                try ReportExporter.exportCAAResources(flights: finalised, summary: LogbookSummary(flights: finalised), to: folder)
+            }
+            selectedExportFolder = folder
+            try folderAccessStore.remember(folder, for: .exports)
+            let files = [lastExport?.csv, lastExport?.html].compactMap { $0 }
+            try repository.recordOperation(OperationBatch(
+                kind: "export",
+                source: folder.path,
+                status: "completed",
+                summary: "Exported \(finalised.count) finalised active records in CAA format",
+                completedAt: Date(),
+                affectedCount: finalised.count,
+                beforeTotalMinutes: LogbookSummary(flights: finalised).totalMinutes,
+                afterTotalMinutes: LogbookSummary(flights: finalised).totalMinutes,
+                artifactURLs: files
+            ))
+            refreshHistory()
+            announce("Exported \(finalised.count) finalised records in CAA format. This is not a regulatory certification")
+        } catch {
+            recordFailedOperation(
+                kind: "export",
+                source: folder.path,
+                summary: "CAA-format export failed before completion: \(error.localizedDescription)",
+                affectedCount: attemptedCount,
+                totalMinutes: attemptedMinutes
+            )
             statusMessage = "Export failed: \(error)"
         }
     }
 
-    func createEncryptedBackup() {
+    func requestExport(to folder: URL? = nil) {
+        guard let destination = folder ?? selectedExportFolder else {
+            chooseAndExportReports()
+            return
+        }
+        pendingExportFolder = destination
+        showExportConfirmation = true
+    }
+
+    var pendingExportDestinationName: String {
+        (pendingExportFolder ?? selectedExportFolder)?.path(percentEncoded: false) ?? "No folder selected"
+    }
+
+    func confirmExport() {
+        showExportConfirmation = false
+        guard let folder = pendingExportFolder else { return }
+        pendingExportFolder = nil
+        exportReports(to: folder)
+    }
+
+    func cancelExport() {
+        pendingExportFolder = nil
+        showExportConfirmation = false
+    }
+
+    func chooseAndExportReports() {
+        if let syntheticSelection = syntheticExportFolderSelection() {
+            // This branch is already entered from a @MainActor UI action. A
+            // second main-queue hop can leave SwiftUI in a disabled ghost-modal
+            // state without materialising the confirmation sheet on macOS.
+            requestExport(to: syntheticSelection)
+            return
+        }
+        platformServices.chooseFolder(title: "Choose Export Folder", prompt: "Export Here") { [weak self] url in
+            guard let self, let url else { return }
+            self.requestExport(to: url)
+        }
+    }
+
+    func exportToRememberedFolder() {
+        requestExport(to: selectedExportFolder)
+    }
+
+    func revealLastExport() {
+        guard let csv = lastExport?.csv else { return }
+        platformServices.reveal([csv])
+        announce("Requested Finder reveal for \(csv.path(percentEncoded: false))")
+    }
+
+    private func restoreLastVerifiedBackupStatus(from batches: [OperationBatch]) {
+        guard lastBackupVerification == nil,
+              let batch = batches.first(where: {
+                  $0.kind == "backup" && $0.status == "completed" && $0.verification?.passed == true
+              }),
+              let backupURL = batch.artifactURLs.first(where: { $0.pathExtension == "blackboxbackup" })
+        else { return }
+        lastBackupVerification = batch.verification
+        lastVerifiedBackupURL = backupURL
+        lastBackup = BackupResult(
+            encryptedBackup: backupURL,
+            manifest: batch.artifactURLs.first(where: { $0.pathExtension == "json" }) ?? backupURL.deletingPathExtension().appendingPathExtension("manifest.json")
+        )
+    }
+
+    func createEncryptedBackup(in folder: URL? = nil) {
+        let destination = folder ?? selectedBackupFolder ?? paths.backupFolder
         do {
-            lastBackup = try EncryptedBackupService.createBackup(
-                database: paths.workingDatabase,
-                destinationFolder: paths.backupFolder,
-                passphrase: backupPassphrase
-            )
+            lastBackup = try folderAccessStore.withAccess(to: destination) {
+                try EncryptedBackupService.createBackup(
+                    database: paths.workingDatabase,
+                    destinationFolder: destination,
+                    passphrase: backupPassphrase
+                )
+            }
+            selectedBackupFolder = destination
+            if destination.standardizedFileURL.path != paths.backupFolder.standardizedFileURL.path {
+                try folderAccessStore.remember(destination, for: .backups)
+            }
+            if let backup = lastBackup {
+                lastBackupVerification = try repository.verifyEncryptedBackup(at: backup.encryptedBackup, passphrase: backupPassphrase)
+                lastVerifiedBackupURL = backup.encryptedBackup
+                try repository.recordOperation(OperationBatch(
+                    kind: "backup",
+                    source: destination.path,
+                    status: lastBackupVerification?.passed == true ? "completed" : "failed",
+                    summary: "Created and verified encrypted recovery backup",
+                    backupPath: backup.encryptedBackup.path,
+                    completedAt: Date(),
+                    affectedCount: summary.flightCount,
+                    beforeTotalMinutes: summary.totalMinutes,
+                    afterTotalMinutes: summary.totalMinutes,
+                    verification: lastBackupVerification,
+                    artifactURLs: [backup.encryptedBackup, backup.manifest]
+                ))
+            }
             backupPassphrase = ""
-            statusMessage = "Created encrypted backup."
+            refreshHistory()
+            announce("Created and verified encrypted backup")
         } catch {
+            recordFailedOperation(
+                kind: "backup",
+                source: destination.path,
+                summary: "Encrypted backup failed before verification: \(error.localizedDescription)",
+                affectedCount: summary.flightCount,
+                totalMinutes: summary.totalMinutes
+            )
             statusMessage = "Encrypted backup failed: \(error)"
         }
     }
 
-    func restoreEncryptedBackup(url: URL) {
+    func chooseAndCreateEncryptedBackup() {
+        platformServices.chooseFolder(title: "Choose Backup Folder", prompt: "Back Up Here") { [weak self] url in
+            guard let self, let url else { return }
+            self.createEncryptedBackup(in: url)
+        }
+    }
+
+    func rehearseLastVerifiedRestore() {
+        guard let lastVerifiedBackupURL else {
+            statusMessage = "Create and verify an encrypted backup before rehearsing restore."
+            return
+        }
         do {
-            let restorePoint = paths.backupFolder.appendingPathComponent("Blackbox-pre-restore-\(Int(Date().timeIntervalSince1970)).sqlite")
-            if FileManager.default.fileExists(atPath: paths.workingDatabase.path) {
-                try? FileManager.default.copyItem(at: paths.workingDatabase, to: restorePoint)
+            let verification = try folderAccessStore.withAccess(to: lastVerifiedBackupURL.deletingLastPathComponent()) {
+                try repository.rehearseRestore(from: lastVerifiedBackupURL, passphrase: backupPassphrase)
             }
-            try EncryptedBackupService.restoreBackup(
-                encryptedBackup: url,
-                destinationDatabase: paths.workingDatabase,
-                passphrase: backupPassphrase
-            )
+            lastBackupVerification = verification
             backupPassphrase = ""
+            try repository.recordOperation(OperationBatch(
+                kind: "restore_rehearsal", source: lastVerifiedBackupURL.path,
+                status: verification.passed ? "completed" : "failed",
+                summary: "Inspected an encrypted backup in a disposable staging location",
+                completedAt: Date(), affectedCount: verification.actualFlightCount,
+                beforeTotalMinutes: summary.totalMinutes, afterTotalMinutes: verification.actualTotalMinutes,
+                verification: verification, artifactURLs: [lastVerifiedBackupURL]
+            ))
+            refreshHistory()
+            announce("Synthetic restore rehearsal completed without replacing the active database")
+        } catch {
+            recordFailedOperation(
+                kind: "restore_rehearsal",
+                source: lastVerifiedBackupURL.path,
+                summary: "Synthetic restore rehearsal failed: \(error.localizedDescription)",
+                affectedCount: summary.flightCount,
+                totalMinutes: summary.totalMinutes
+            )
+            statusMessage = "Restore rehearsal failed: \(error)"
+        }
+    }
+
+    func restoreEncryptedBackup(url: URL) {
+        if let existingPlan = pendingRestorePlan {
+            repository.discardRestorePlan(existingPlan)
+            pendingRestorePlan = nil
+        }
+        do {
+            pendingRestorePlan = try withScopedAccess(to: url) {
+                try repository.prepareRestore(from: url, passphrase: backupPassphrase)
+            }
+            backupPassphrase = ""
+            statusMessage = "Restore preview verified. Nothing has been changed."
+        } catch {
+            statusMessage = "Restore preview failed: \(error)"
+        }
+    }
+
+    func applyPendingRestore() {
+        guard let plan = pendingRestorePlan else { return }
+        pendingRestorePlan = nil
+        do {
+            let restorePoint = try repository.applyRestore(
+                plan,
+                injectingFailureAt: UITestLaunchConfiguration.restoreFailureStageForCurrentLaunch()
+            )
             selectedFlightID = nil
             selectedRouteFlightIDs = []
             draftFlight = nil
             refresh()
-            statusMessage = "Restored encrypted backup."
+            announce("Restored encrypted backup. Recovery point: \(restorePoint.lastPathComponent)")
+        } catch LogbookRepositoryError.recoveryFailed {
+            announce("Restore failed and recovery could not be verified. Stop using this database and preserve the diagnostic artifact")
+        } catch LogbookRepositoryError.operationFailedWithVerifiedRecovery(_, let message, let recoveryOutcome) {
+            announce("Restore failed. \(recoveryOutcome): \(message)")
         } catch {
-            statusMessage = "Restore failed: \(error)"
+            announce("Restore failed before a recovery outcome could be reported: \(error)")
         }
+    }
+
+    func cancelPendingRestore() {
+        guard let plan = pendingRestorePlan else { return }
+        repository.discardRestorePlan(plan)
+        pendingRestorePlan = nil
+        statusMessage = "Restore preview cancelled. No records were changed, and the decrypted preview was removed."
+    }
+
+    func performUpgrade() {
+        guard let upgradePreflight else { return }
+
+        let backup: URL
+        do {
+            backup = try repository.backUpAndUpgrade(using: upgradePreflight)
+        } catch {
+            recordFailedOperation(
+                kind: "migration",
+                source: paths.workingDatabase.path,
+                summary: "Migration failed before completion: \(error.localizedDescription)",
+                affectedCount: upgradePreflight.flightCount,
+                totalMinutes: summary.totalMinutes
+            )
+            statusMessage = "Upgrade failed without completing: \(error)"
+            return
+        }
+
+        // The schema transaction has committed once backUpAndUpgrade returns.
+        // Everything below is audit/reporting work and must never relabel that
+        // completed migration as a failed upgrade.
+        self.upgradePreflight = nil
+        var auditFailure: Error?
+        do {
+            let beforeSummary = try Self.migrationAuditSummary(at: backup)
+            let afterSummary = try repository.summary()
+            guard beforeSummary.flightCount == afterSummary.flightCount,
+                  beforeSummary.totalMinutes == afterSummary.totalMinutes else {
+                throw LogbookRepositoryError.integrityCheckFailed(
+                    "The verified backup and upgraded database totals do not match."
+                )
+            }
+            let batch = OperationBatch(
+                kind: "migration", source: paths.workingDatabase.path, status: "completed",
+                summary: "Schema \(upgradePreflight.currentSchemaVersion) upgraded to \(upgradePreflight.targetSchemaVersion) after verified backup",
+                backupPath: backup.path, completedAt: Date(), affectedCount: upgradePreflight.flightCount,
+                beforeTotalMinutes: beforeSummary.totalMinutes, afterTotalMinutes: afterSummary.totalMinutes,
+                recoveryOutcome: "Pre-upgrade database retained", artifactURLs: [backup]
+            )
+            if let migrationAuditRecorder {
+                try migrationAuditRecorder(batch)
+            } else {
+                try repository.recordOperation(batch)
+            }
+        } catch {
+            auditFailure = error
+        }
+
+        refresh()
+        if let auditFailure {
+            statusMessage = "Upgrade complete. Preserved backup: \(backup.lastPathComponent). Migration history was not recorded: \(auditFailure.localizedDescription)"
+        } else {
+            statusMessage = "Upgrade complete. Preserved backup: \(backup.lastPathComponent)."
+        }
+    }
+
+    /// Reads the same active-flight total used by the current repository while
+    /// remaining compatible with a legacy schema that predates record_state or
+    /// fstd_minutes. The source is the already verified, read-only migration
+    /// backup, so this calculation cannot change historical flight rows.
+    static func migrationAuditSummary(at databaseURL: URL) throws -> LogbookSummary {
+        let database = try SQLiteConnection(path: databaseURL.path, readOnly: true)
+        let columns = Set(try database.rows("PRAGMA table_info(flights)").compactMap { $0["name"]?.string })
+        guard columns.contains("total_minutes") else {
+            throw LogbookRepositoryError.invalidState(
+                "The verified backup does not contain the total_minutes flight field."
+            )
+        }
+        let fstdMinutes = columns.contains("fstd_minutes") ? "COALESCE(fstd_minutes, 0)" : "0"
+        let activeFilter = columns.contains("record_state")
+            ? " WHERE record_state IN ('draft', 'finalised')"
+            : ""
+        let row = try database.rows("""
+        SELECT COUNT(*) AS flight_count,
+               COALESCE(SUM(MAX(COALESCE(total_minutes, 0) - \(fstdMinutes), 0)), 0) AS total_minutes
+        FROM flights\(activeFilter)
+        """).first ?? [:]
+        return LogbookSummary(
+            flightCount: row["flight_count"]?.int ?? 0,
+            totalMinutes: row["total_minutes"]?.int ?? 0
+        )
+    }
+
+    private func recordFailedOperation(kind: String, source: String, summary: String, affectedCount: Int, totalMinutes: Int) {
+        do {
+            try repository.recordOperation(OperationBatch(
+                kind: kind,
+                source: source,
+                status: "failed",
+                summary: summary,
+                completedAt: Date(),
+                affectedCount: affectedCount,
+                beforeTotalMinutes: totalMinutes,
+                afterTotalMinutes: totalMinutes,
+                failureStage: "pre_completion",
+                recoveryOutcome: "Active flight facts were not changed"
+            ))
+            refreshHistory()
+        } catch {
+            statusMessage = "\(summary). Operation history could not be recorded: \(error.localizedDescription)"
+        }
+    }
+
+    func discardChangesAndContinue() {
+        isDraftDirty = false
+        if pendingStartNew {
+            pendingStartNew = false
+            pendingSection = nil
+            pendingSelectionID = nil
+            startNewFlightImmediately()
+            return
+        }
+        let target = pendingSelectionID
+        if let section = pendingSection {
+            pendingSection = nil
+            pendingSelectionID = nil
+            selectedSection = section
+            if let target { selectFlightImmediately(id: target) }
+            if pendingSearchFocus, section == .flights {
+                pendingSearchFocus = false
+                searchFocusRequest += 1
+            }
+            return
+        }
+        pendingSelectionID = nil
+        selectFlightImmediately(id: target)
+    }
+
+    func cancelPendingSelection() {
+        pendingSelectionID = nil
+        pendingSection = nil
+        pendingStartNew = false
+        pendingSearchFocus = false
+        showDiscardConfirmation = false
     }
 
     func saveAirportOverride() {
@@ -521,6 +1772,55 @@ final class LogbookStore: ObservableObject {
             statusMessage = "Airport override failed: \(error)"
         }
     }
+
+    func showHistory(for flightID: Int64? = nil, destination: HistoryDestination? = nil) {
+        historyQuery.flightID = flightID
+        historyRelatedFlightIDs = flightID.map(amendmentChainIDs(startingAt:)) ?? []
+        requestedHistoryDestination = destination ?? (flightID == nil ? .operations : .revisions)
+        if isDraftDirty {
+            pendingSection = .history
+            showDiscardConfirmation = true
+        } else {
+            selectedSection = .history
+        }
+        refreshHistory()
+    }
+
+    func clearHistoryContext() {
+        historyQuery.flightID = nil
+        historyRelatedFlightIDs.removeAll()
+        refreshHistory()
+    }
+
+    private func amendmentChainIDs(startingAt flightID: Int64) -> Set<Int64> {
+        var visited = Set<Int64>()
+        var pending = [flightID]
+        while let currentID = pending.popLast(), visited.insert(currentID).inserted {
+            guard let flight = try? repository.flight(id: currentID) else { continue }
+            if let originalID = flight.amendsFlightID { pending.append(originalID) }
+            if let successorID = flight.supersededByFlightID { pending.append(successorID) }
+        }
+        return visited
+    }
+
+    private func withScopedAccess<T>(to url: URL, _ work: () throws -> T) throws -> T {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return try work()
+    }
+
+    func announce(_ message: String) {
+        statusMessage = message
+        NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested, userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+}
+
+enum HistoryDestination: String, CaseIterable, Identifiable {
+    case trash = "Trash"
+    case operations = "Operations"
+    case revisions = "Revisions"
+
+    var id: String { rawValue }
 }
 
 enum AppSection: String, CaseIterable, Identifiable {
@@ -533,8 +1833,9 @@ enum AppSection: String, CaseIterable, Identifiable {
     case map = "3D Map"
     case comparison = "Compare"
     case imports = "Import"
-    case compliance = "CAA Check"
+    case compliance = "Logbook Checks"
     case reports = "Reports"
+    case history = "History"
 
     var id: String { rawValue }
     var subtitle: String {
@@ -548,8 +1849,9 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .map: return "Route globe"
         case .comparison: return "LogTen side by side"
         case .imports: return "PDF and OCR"
-        case .compliance: return "CAA audit"
+        case .compliance: return "Internal completeness"
         case .reports: return "CSV and print"
+        case .history: return "Trash and audit trail"
         }
     }
 
@@ -566,6 +1868,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .imports: return "doc.viewfinder"
         case .compliance: return "checkmark.seal"
         case .reports: return "doc.text"
+        case .history: return "clock.arrow.circlepath"
         }
     }
 }

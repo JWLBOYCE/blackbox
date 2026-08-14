@@ -8,6 +8,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .library(name: "OpenPilotLogbookCore", targets: ["OpenPilotLogbookCore"]),
         .executable(name: "OpenPilotLogbook", targets: ["OpenPilotLogbook"]),
         .executable(name: "OpenPilotLogbookCoreUnitTests", targets: ["OpenPilotLogbookCoreUnitTests"]),
         .executable(name: "OpenPilotLogbookCoreSmokeTests", targets: ["OpenPilotLogbookCoreSmokeTests"])
@@ -24,7 +25,10 @@ let package = Package(
         .executableTarget(
             name: "OpenPilotLogbook",
             dependencies: ["OpenPilotLogbookCore"],
-            exclude: ["Assets"]
+            exclude: ["Assets"],
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug))
+            ]
         ),
         .executableTarget(
             name: "OpenPilotLogbookCoreUnitTests",
@@ -33,6 +37,14 @@ let package = Package(
         .executableTarget(
             name: "OpenPilotLogbookCoreSmokeTests",
             dependencies: ["OpenPilotLogbookCore"]
+        ),
+        .testTarget(
+            name: "OpenPilotLogbookCoreTests",
+            dependencies: ["OpenPilotLogbookCore"]
+        ),
+        .testTarget(
+            name: "OpenPilotLogbookAppTests",
+            dependencies: ["OpenPilotLogbook"]
         )
     ]
 )

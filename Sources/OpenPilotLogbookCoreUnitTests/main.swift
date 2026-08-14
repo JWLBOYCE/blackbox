@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import OpenPilotLogbookCore
 
@@ -12,13 +13,74 @@ try runUnitTests()
 print("OpenPilotLogbookCore unit tests passed.")
 
 func runUnitTests() throws {
+    try testSelfContainedSQLiteFixture()
     try testHHMMExportsAndEscaping()
     try testPrivacyGuardBlocksPrivateArtifactsOnly()
     try testEncryptedBackupRoundTrip()
+    try testLegacyEncryptedBackupRestore()
+    try testRestoreRejectsExecutableSchema()
+    try testLegacySchemaBackupPreviewUpgrade()
+    try testRestorePreviewDiscardRemovesPlaintext()
+    testCSVFormulaNeutralisation()
+    testDocumentDurationBounds()
     testApplicationSupportDefaultAvoidsDesktopStorage()
     testRecencyAndDuplicates()
     testRosterPolicyIgnoresGroundDutiesAndNormalizesAirports()
     try testRepositoryAirportOverrideDuplicateAndComplianceGuidance()
+    try testFolderAccessStoreLifecycle()
+}
+
+func testSelfContainedSQLiteFixture() throws {
+    let root = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sourceURL = root.appendingPathComponent("Source.sqlite")
+    let copiedURL = root.appendingPathComponent("Copied.sqlite")
+
+    do {
+        let source = try SQLiteConnection(path: sourceURL.path)
+        try source.execute("CREATE TABLE synthetic_flights(id INTEGER PRIMARY KEY, flight_number TEXT NOT NULL)")
+        try source.execute("INSERT INTO synthetic_flights VALUES(1, 'SYN-WAL-1')")
+        try source.finalizeAsSelfContainedDatabase()
+    }
+
+    let fileManager = FileManager.default
+    expect(!fileManager.fileExists(atPath: sourceURL.path + "-wal"), "standalone fixture should not retain a WAL")
+    try fileManager.copyItem(at: sourceURL, to: copiedURL)
+
+    let copied = try SQLiteConnection(path: copiedURL.path, readOnly: true)
+    let row = try copied.rows("SELECT id, flight_number FROM synthetic_flights").first
+    expect(row?["id"]?.int == 1, "copied standalone fixture should retain its row")
+    expect(row?["flight_number"]?.string == "SYN-WAL-1", "copied standalone fixture should retain its values")
+    let integrity = try copied.integrityCheck().lowercased()
+    expect(integrity == "ok", "copied standalone fixture should pass integrity_check")
+}
+
+func testFolderAccessStoreLifecycle() throws {
+    let suiteName = "Blackbox.FolderAccessStoreTests.\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+        expect(false, "isolated defaults suite should be available")
+        return
+    }
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let root = try makeTempDirectory()
+    let folder = root.appendingPathComponent("Exports", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let store = FolderAccessStore(defaults: defaults, keyPrefix: "Blackbox.test.folder", mode: .standard)
+
+    expect(store.resolve(.exports) == .missing, "an unset folder bookmark should be missing")
+    try store.remember(folder, for: .exports)
+    guard case .available(let resolved) = store.resolve(.exports) else {
+        expect(false, "a remembered folder should resolve")
+        return
+    }
+    expect(resolved.standardizedFileURL == folder.standardizedFileURL, "the resolved folder should match the selected destination")
+
+    try FileManager.default.removeItem(at: folder)
+    expect(store.resolve(.exports) == .stale, "a deleted bookmarked folder should require reselection")
+    store.forget(.exports)
+    expect(store.resolve(.exports) == .missing, "forget should clear a saved folder bookmark")
+    try? FileManager.default.removeItem(at: root)
 }
 
 func testHHMMExportsAndEscaping() throws {
@@ -84,12 +146,127 @@ func testEncryptedBackupRoundTrip() throws {
     let encryptedBytes = try Data(contentsOf: backup.encryptedBackup)
     let manifest = try String(contentsOf: backup.manifest)
     expect(encryptedBytes.range(of: plaintext) == nil, "encrypted payload should not contain plaintext database bytes")
+    expect(encryptedBytes.starts(with: Data("BLACKBOX-ENCRYPTED-BACKUP".utf8)), "new encrypted backups should use the versioned envelope")
+    expect(manifest.contains("\"version\": 2"), "backup manifest should identify the hardened format")
+    expect(manifest.contains("PBKDF2-HMAC-SHA256"), "backup manifest should identify the password KDF")
     expect(manifest.contains("contains no flight rows"), "manifest should document privacy boundary")
 
     try EncryptedBackupService.restoreBackup(encryptedBackup: backup.encryptedBackup, destinationDatabase: restored, passphrase: "correct horse battery staple")
     let restoredBytes = try Data(contentsOf: restored)
     let sourceBytes = try Data(contentsOf: source)
     expect(restoredBytes == sourceBytes, "restored database should match source")
+}
+
+func testLegacyEncryptedBackupRestore() throws {
+    let temp = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: temp) }
+    let legacyURL = temp.appendingPathComponent("Legacy.blackboxbackup")
+    let restoredURL = temp.appendingPathComponent("Legacy-Restored.sqlite")
+    let passphrase = "legacy-compatible-passphrase"
+    let plaintext = Data("synthetic legacy backup".utf8)
+    let digest = SHA256.hash(data: Data(passphrase.utf8))
+    let sealed = try AES.GCM.seal(plaintext, using: SymmetricKey(data: Data(digest)))
+    try sealed.combined!.write(to: legacyURL)
+
+    try EncryptedBackupService.restoreBackup(encryptedBackup: legacyURL, destinationDatabase: restoredURL, passphrase: passphrase)
+    let restored = try Data(contentsOf: restoredURL)
+    expect(restored == plaintext, "version 1 encrypted backups should remain restorable")
+}
+
+func testRestoreRejectsExecutableSchema() throws {
+    let root = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sourceRoot = root.appendingPathComponent("Source", isDirectory: true)
+    let targetRoot = root.appendingPathComponent("Target", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
+    let sourcePaths = testPaths(sourceRoot)
+    let targetPaths = testPaths(targetRoot)
+    let source = LogbookRepository(paths: sourcePaths)
+    let target = LogbookRepository(paths: targetPaths)
+    try source.bootstrapIfNeeded()
+    try target.bootstrapIfNeeded()
+    let sourceDatabase = try SQLiteConnection(path: sourcePaths.workingDatabase.path)
+    try sourceDatabase.execute("CREATE TRIGGER malicious_restore_trigger AFTER INSERT ON flights BEGIN DELETE FROM flights; END")
+    let backup = try EncryptedBackupService.createBackup(
+        database: sourcePaths.workingDatabase,
+        destinationFolder: root.appendingPathComponent("Encrypted", isDirectory: true),
+        passphrase: "synthetic-schema-attack"
+    )
+    var rejected = false
+    do {
+        _ = try target.prepareRestore(from: backup.encryptedBackup, passphrase: "synthetic-schema-attack")
+    } catch {
+        rejected = true
+    }
+    expect(rejected, "restore preview should reject SQLite triggers before activation")
+}
+
+func testLegacySchemaBackupPreviewUpgrade() throws {
+    let root = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sourceRoot = root.appendingPathComponent("Legacy", isDirectory: true)
+    let targetRoot = root.appendingPathComponent("Target", isDirectory: true)
+    try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: targetRoot, withIntermediateDirectories: true)
+    let sourceURL = sourceRoot.appendingPathComponent("Legacy.sqlite")
+    let legacy = try SQLiteConnection(path: sourceURL.path)
+    try legacy.execute("CREATE TABLE flights (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, total_minutes INTEGER NOT NULL DEFAULT 0, locked INTEGER NOT NULL DEFAULT 0)")
+    try legacy.execute("INSERT INTO flights(date, total_minutes, locked) VALUES('2026-01-01T00:00:00Z', 45, 1)")
+    try legacy.execute("PRAGMA user_version = 1")
+    try legacy.finalizeAsSelfContainedDatabase()
+    let backup = try EncryptedBackupService.createBackup(
+        database: sourceURL,
+        destinationFolder: root.appendingPathComponent("Encrypted", isDirectory: true),
+        passphrase: "synthetic-legacy-schema"
+    )
+    let target = LogbookRepository(paths: testPaths(targetRoot))
+    try target.bootstrapIfNeeded()
+    let plan = try target.prepareRestore(from: backup.encryptedBackup, passphrase: "synthetic-legacy-schema")
+    expect(plan.schemaVersion == LogbookRepository.currentSchemaVersion, "legacy backup preview should migrate to the current schema")
+    expect(plan.restoredFlightCount == 1, "legacy backup preview should retain its flight")
+    target.discardRestorePlan(plan)
+}
+
+func testRestorePreviewDiscardRemovesPlaintext() throws {
+    let root = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repositoryRoot = root.appendingPathComponent("Repository", isDirectory: true)
+    try FileManager.default.createDirectory(at: repositoryRoot, withIntermediateDirectories: true)
+    let paths = testPaths(repositoryRoot)
+    let repository = LogbookRepository(paths: paths)
+    try repository.bootstrapIfNeeded()
+    let backup = try EncryptedBackupService.createBackup(
+        database: paths.workingDatabase,
+        destinationFolder: root.appendingPathComponent("Encrypted", isDirectory: true),
+        passphrase: "synthetic-preview-discard"
+    )
+    let plan = try repository.prepareRestore(from: backup.encryptedBackup, passphrase: "synthetic-preview-discard")
+    let artifactRoot = plan.inspectedDatabaseURL.deletingLastPathComponent()
+    expect(FileManager.default.fileExists(atPath: plan.inspectedDatabaseURL.path), "restore preview should create a private inspected database")
+    repository.discardRestorePlan(plan)
+    expect(!FileManager.default.fileExists(atPath: artifactRoot.path), "cancelling restore should remove its decrypted preview")
+}
+
+func testCSVFormulaNeutralisation() {
+    for value in ["=1+1", "+SUM(A1:A2)", "-1+2", "@SUM(A1:A2)", "\t=HYPERLINK(\"https://example.invalid\")"] {
+        expect(LogbookFormatters.csvEscape(value).contains("'"), "formula-like CSV text should be neutralised")
+    }
+    expect(LogbookFormatters.csvEscape("Synthetic note") == "Synthetic note", "ordinary CSV text should remain unchanged")
+}
+
+func testDocumentDurationBounds() {
+    expect(TextFlightParser.parseDuration("12:34") == 754, "valid HH:MM durations should parse")
+    expect(TextFlightParser.parseDuration("1:60") == nil, "invalid minute components should be rejected")
+    expect(TextFlightParser.parseDuration("9223372036854775807:00") == nil, "oversized duration input should not overflow")
+}
+
+func testPaths(_ root: URL) -> LogbookPaths {
+    LogbookPaths(
+        backupFolder: root.appendingPathComponent("Backups", isDirectory: true),
+        sourceLogTenDatabase: root.appendingPathComponent("No LogTen Source.sqlite"),
+        workingDatabase: root.appendingPathComponent("Blackbox.sqlite")
+    )
 }
 
 func testApplicationSupportDefaultAvoidsDesktopStorage() {
@@ -155,7 +332,7 @@ func testRepositoryAirportOverrideDuplicateAndComplianceGuidance() throws {
         workingDatabase: temp.appendingPathComponent("OpenPilotLogbook.sqlite")
     )
     let repository = LogbookRepository(paths: paths)
-    try repository.createSchema(in: SQLiteConnection(path: paths.workingDatabase.path))
+    try repository.bootstrapIfNeeded()
     try repository.saveAirportOverride(AirportOverride(identifier: "ZZZZ", name: "Synthetic Airport", latitude: 10.25, longitude: 20.5))
     let overrides = try repository.airportOverrides()
     expect(overrides.first?.identifier == "ZZZZ", "airport override should persist")
@@ -171,14 +348,15 @@ func testRepositoryAirportOverrideDuplicateAndComplianceGuidance() throws {
         totalMinutes: 45,
         copilotMinutes: 45
     )
-    _ = try repository.save(flight)
-    _ = try repository.save(flight)
-    _ = try repository.save(FlightEntry(
+    _ = try repository.saveDraft(flight)
+    _ = try repository.saveDraft(flight)
+    _ = try repository.saveDraft(FlightEntry(
         date: utcDate(year: 2026, month: 7, day: 2),
         aircraftID: "A320#SIM",
         aircraftType: "FFS",
         entryKind: "Simulator",
-        totalMinutes: 120
+        totalMinutes: 120,
+        fstdMinutes: 120
     ))
     let summary = try repository.summary()
     expect(summary.totalMinutes == 90, "repository total should count flying time only")
@@ -186,7 +364,10 @@ func testRepositoryAirportOverrideDuplicateAndComplianceGuidance() throws {
     let duplicates = try repository.duplicateFlightGroups()
     expect(duplicates.count == 1, "repository duplicate groups should detect matching saved rows")
 
-    _ = try repository.save(FlightEntry(date: utcDate(year: 2026, month: 7, day: 2), totalMinutes: 0))
+    var incomplete = FlightEntry(date: utcDate(year: 2026, month: 7, day: 2), totalMinutes: 0)
+    let incompleteID = try repository.saveDraft(incomplete)
+    incomplete.id = incompleteID
+    _ = try repository.finalise(incomplete, acknowledgeWarnings: true)
     let compliance = try repository.complianceSnapshot()
     expect(compliance.issues.contains { !$0.guidance.isEmpty }, "compliance issues should include guidance")
 }

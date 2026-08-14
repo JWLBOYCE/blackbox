@@ -2,11 +2,37 @@ import Foundation
 
 public enum ReportExporter {
     public static func exportCAAResources(flights: [FlightEntry], summary: LogbookSummary, to folder: URL) throws -> (csv: URL, html: URL) {
+        let flights = flights.filter { $0.recordState == .finalised }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let summary = LogbookSummary(flights: flights)
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let csvURL = folder.appendingPathComponent("CAA_Logbook_Export_\(stamp).csv")
         let htmlURL = folder.appendingPathComponent("CAA_Logbook_Printable_\(stamp).html")
-        try csv(flights: flights).write(to: csvURL, atomically: true, encoding: .utf8)
-        try html(flights: flights, summary: summary).write(to: htmlURL, atomically: true, encoding: .utf8)
+        guard !FileManager.default.fileExists(atPath: csvURL.path),
+              !FileManager.default.fileExists(atPath: htmlURL.path) else {
+            throw NSError(domain: "BlackboxExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "An export with this timestamp already exists. Try again in a moment."])
+        }
+        let stagingFolder = folder.appendingPathComponent(".Blackbox-Export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: stagingFolder,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: stagingFolder) }
+        let stagedCSV = stagingFolder.appendingPathComponent(csvURL.lastPathComponent)
+        let stagedHTML = stagingFolder.appendingPathComponent(htmlURL.lastPathComponent)
+        try csv(flights: flights).write(to: stagedCSV, atomically: true, encoding: .utf8)
+        try html(flights: flights, summary: summary).write(to: stagedHTML, atomically: true, encoding: .utf8)
+        var csvCommitted = false
+        do {
+            try FileManager.default.moveItem(at: stagedCSV, to: csvURL)
+            csvCommitted = true
+            try FileManager.default.moveItem(at: stagedHTML, to: htmlURL)
+        } catch {
+            if csvCommitted { try? FileManager.default.removeItem(at: csvURL) }
+            try? FileManager.default.removeItem(at: htmlURL)
+            throw error
+        }
         return (csvURL, htmlURL)
     }
 
@@ -144,7 +170,7 @@ public enum ReportExporter {
         </head>
         <body>
           <h1>CAA Pilot Logbook Export</h1>
-          <p>Electronic/printable pilot logbook copy.</p>
+          <p>Electronic/printable pilot logbook copy. This CAA-format report is generated from finalised active records and is not regulatory certification.</p>
           <div class="meta">
             <strong>Flights</strong><span>\(summary.flightCount)</span>
             <strong>Total time</strong><span>\(LogbookFormatters.hours(summary.totalMinutes))</span>

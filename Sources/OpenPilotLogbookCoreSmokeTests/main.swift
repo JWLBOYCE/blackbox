@@ -8,131 +8,69 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     }
 }
 
-let temporaryRoot = FileManager.default.temporaryDirectory
-    .appendingPathComponent("BlackboxSmoke-\(UUID().uuidString)", isDirectory: true)
-try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-let paths = LogbookPaths(
-    backupFolder: temporaryRoot.appendingPathComponent("Backups", isDirectory: true),
-    sourceLogTenDatabase: temporaryRoot.appendingPathComponent("MissingLogTenSource.sqlite"),
-    workingDatabase: temporaryRoot.appendingPathComponent("Blackbox.sqlite")
-)
+let root = FileManager.default.temporaryDirectory.appendingPathComponent("BlackboxSmoke-\(UUID().uuidString)", isDirectory: true)
+try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: root) }
+let paths = LogbookPaths(backupFolder: root.appendingPathComponent("Backups"), sourceLogTenDatabase: root.appendingPathComponent("Missing.sql"), workingDatabase: root.appendingPathComponent("Blackbox.sqlite"))
 let repository = LogbookRepository(paths: paths)
-try FileManager.default.createDirectory(at: paths.backupFolder, withIntermediateDirectories: true)
 try repository.bootstrapIfNeeded()
-let initialSummary = try repository.summary()
-expect(initialSummary.flightCount == 0, "expected an empty synthetic logbook")
+let emptySummary = try repository.summary()
+expect(emptySummary.flightCount == 0, "expected empty isolated logbook")
 
-expect(LogbookFormatters.hours(0) == "00:00", "zero hour formatting")
-expect(LogbookFormatters.hours(65) == "01:05", "minute hour formatting")
+let date = ISO8601DateFormatter().date(from: "2026-06-21T12:00:00Z")!
+let entered = FlightEntry(
+    sourcePK: 900_001, date: date, departure: "EGLL", arrival: "EGKK", aircraftID: "G-TEST", aircraftType: "A320",
+    flightNumber: "TST101", operation: "MP", pilotFunction: "Co-pilot", totalMinutes: 65,
+    picMinutes: 5, picDayMinutes: 5, copilotMinutes: 65, copilotDayMinutes: 65,
+    instrumentMinutes: 0, crossCountryMinutes: 0, fstdMinutes: 7, pilotFlying: true,
+    totalTakeoffs: 4, totalLandings: 5, crewNames: "Casey Captain | Avery Pilot", crewRoles: "Casey Captain=Captain | Avery Pilot=First Officer",
+    remarks: "Synthetic smoke flight", signatureName: "Synthetic Signer", signatureReference: "SYN-1"
+)
+let flightID = try repository.saveDraft(entered)
+let saved = try repository.flight(id: flightID)!
+expect(saved.pilotFunction == "Co-pilot", "pilot function must not be rewritten")
+expect(saved.picMinutes == 5 && saved.picDayMinutes == 5 && saved.copilotMinutes == 65 && saved.copilotDayMinutes == 65, "role times and day/night splits must not be reallocated")
+expect(saved.instrumentMinutes == 0 && saved.crossCountryMinutes == 0, "entered zero values must remain zero")
+expect(saved.fstdMinutes == 7 && saved.pilotFlying, "mixed entered values must remain intact")
+expect(saved.totalTakeoffs == 4 && saved.totalLandings == 5, "entered totals must remain intact")
+expect(saved.signatureName == "Synthetic Signer" && saved.signatureReference == "SYN-1", "signatures must persist")
 
-let departure = utcDate(year: 2026, month: 6, day: 21, hour: 12, minute: 0)
-let flightID = try repository.save(FlightEntry(
-    sourcePK: 900_001,
-    date: departure,
-    departure: "EGLL",
-    arrival: "EGKK",
-    aircraftID: "G-TEST",
-    aircraftType: "A320",
-    flightNumber: "TST101",
-    operation: "MP",
-    pilotFunction: "Co-pilot",
-    totalMinutes: 65,
-    copilotMinutes: 65,
-    pilotFlying: true,
-    crewNames: "Casey Captain | Avery Pilot",
-    remarks: "Synthetic smoke flight"
-))
-
-guard var flight = try repository.flight(id: flightID) else {
-    expect(false, "expected saved flight")
-    exit(1)
-}
-expect(flight.pilotFunction == "PICUS", "expected pilot flying to use PICUS")
-expect(flight.picusMinutes == 65 && flight.copilotMinutes == 0, "expected PICUS allocation")
-expect(flight.instrumentMinutes == 65 && flight.crossCountryMinutes == 65, "expected flight IFR and cross-country allocation")
-expect(flight.totalTakeoffs == 1 && flight.totalLandings == 1, "expected pilot-flying endpoints")
-expect(flight.crewRoleMap["Casey Captain"] == "Captain", "expected captain role inference")
-expect(flight.crewRoleMap["Avery Pilot"] == "First Officer", "expected first-officer role inference")
-expect(flight.distanceNM > 0, "expected nautical-mile route distance")
-
-flight.pilotFlying = false
-flight.dayTakeoffs = 0
-flight.nightTakeoffs = 1
-flight.totalTakeoffs = 1
-flight.dayLandings = 0
-flight.nightLandings = 1
-flight.totalLandings = 1
-flight.crewRoles = "Casey Captain=Captain | Avery Pilot=First Officer"
-_ = try repository.save(flight)
-guard let overridden = try repository.flight(id: flightID) else {
-    expect(false, "expected overridden flight")
-    exit(1)
-}
-expect(overridden.sourcePK == 900_001, "expected source identifier to remain intact")
-expect(overridden.nightTakeoffs == 1 && overridden.nightLandings == 1, "expected manual endpoint override to persist")
-expect(overridden.crewRoleMap["Avery Pilot"] == "First Officer", "expected manual crew role override to persist")
-
-try repository.lockFlight(id: flightID)
+_ = try repository.finalise(saved, acknowledgeWarnings: true)
+let finalised = try repository.flight(id: flightID)
+expect(finalised?.recordState == .finalised, "entry should finalise")
 do {
-    var locked = try repository.flight(id: flightID)!
-    locked.remarks = "Blocked edit"
-    _ = try repository.save(locked)
-    expect(false, "expected locked flight save to fail")
+    _ = try repository.saveDraft(try repository.flight(id: flightID)!)
+    expect(false, "finalised entry should reject direct edits")
 } catch {}
-try repository.unlockFlight(id: flightID)
 
-let simulatorID = try repository.save(FlightEntry(
-    date: departure,
-    aircraftID: "SIM-A320",
-    aircraftType: "Level D",
-    entryKind: "Simulator",
-    totalMinutes: 120,
-    remarks: "Synthetic simulator"
-))
-let simulator = try repository.flight(id: simulatorID)
-expect(simulator?.pilotFunction == "FSTD", "expected simulator function")
-expect(simulator?.fstdMinutes == 120, "expected simulator allocation")
+let amendmentID = try repository.beginAmendment(of: flightID)
+var amendment = try repository.flight(id: amendmentID)!
+amendment.remarks = "Corrected synthetic note"
+_ = try repository.saveDraft(amendment)
+amendment = try repository.flight(id: amendmentID)!
+_ = try repository.finaliseAmendment(amendment, acknowledgeWarnings: true)
+let superseded = try repository.flight(id: flightID)
+let finalisedAmendment = try repository.flight(id: amendmentID)
+expect(superseded?.recordState == .superseded, "original should remain as superseded")
+expect(finalisedAmendment?.recordState == .finalised, "amendment should finalise")
 
-let summerNight = SolarDayNightCalculator.nightMinutes(
-    departure: departure,
-    durationMinutes: 60,
-    departureLatitude: 51.4706,
-    departureLongitude: -0.4619,
-    arrivalLatitude: 51.1481,
-    arrivalLongitude: -0.1903
-)
-expect(summerNight == 0, "expected summer daytime calculation")
+let trashID = try repository.saveDraft(FlightEntry(date: date, remarks: "Recoverable synthetic draft"))
+try repository.moveToTrash(id: trashID)
+let trashed = try repository.flight(id: trashID)
+expect(trashed?.recordState == .trashed, "draft should move to Trash")
+try repository.restoreFromTrash(id: trashID)
+let restored = try repository.flight(id: trashID)
+expect(restored?.recordState == .draft, "trashed draft should restore")
 
-let summary = try repository.summary()
-expect(summary.flightCount == 2, "expected two synthetic entries")
-expect(summary.totalMinutes == 65, "expected flying total to exclude simulator time")
-expect(summary.fstdMinutes == 120, "expected simulator total to remain separate")
-let routes = try repository.mapRoutes(limit: 10)
-let people = try repository.personSummaries()
-expect(routes.count == 1, "expected one geocoded synthetic route")
-expect(people.contains { $0.name == "Avery Pilot" }, "expected full crew names in people summaries")
+let suggestions = FlightSuggestionEngine.suggestions(for: FlightEntry(date: date, departure: "EGLL", arrival: "EGKK"))
+expect(suggestions.contains { $0.field == .distanceNM }, "distance should be offered as a suggestion")
 
-let csv = ReportExporter.csv(flights: [overridden])
-expect(csv.contains("01:05"), "expected HH:MM in CSV")
-let exports = try ReportExporter.exportCAAResources(
-    flights: try repository.flights(),
-    summary: summary,
-    to: paths.backupFolder
-)
-let html = try String(contentsOf: exports.html, encoding: .utf8)
-expect(html.contains("Page totals"), "expected printable page totals")
+let backup = try EncryptedBackupService.createBackup(database: paths.workingDatabase, destinationFolder: paths.backupFolder, passphrase: "synthetic-passphrase")
+let restorePlan = try repository.prepareRestore(from: backup.encryptedBackup, passphrase: "synthetic-passphrase")
+expect(restorePlan.integrityMessage.lowercased() == "ok", "restore preview should verify integrity")
 
-try repository.deleteFlight(id: simulatorID)
-try repository.deleteFlight(id: flightID)
-let finalSummary = try repository.summary()
-expect(finalSummary.flightCount == 0, "expected synthetic entries to be removed")
-
-print("OpenPilotLogbookCore smoke tests passed with synthetic data.")
-
-func utcDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
-    var calendar = Calendar(identifier: .gregorian)
-    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-    return calendar.date(from: DateComponents(timeZone: calendar.timeZone, year: year, month: month, day: day, hour: hour, minute: minute))!
-}
+let revisions = try repository.revisions(for: amendmentID)
+let batches = try repository.operationBatches()
+expect(revisions.count >= 2, "amendment should have durable revisions")
+expect(batches.isEmpty, "no destructive operation should run implicitly")
+print("OpenPilotLogbookCore smoke tests passed with isolated synthetic data.")

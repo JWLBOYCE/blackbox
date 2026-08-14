@@ -1,0 +1,131 @@
+{
+  "configurations" : [
+    {
+      "id" : "6028CD9D-0ED3-4486-BFB7-BA3A4367AE12",
+      "name" : "Increase Contrast Regular",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "contrast"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_INCREASE_CONTRAST",
+            "value" : "1"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "1440"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "980"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "EF3B21DA-62D1-49C4-96DB-8CD638822045",
+      "name" : "Increase Contrast Compact",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "contrast"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_INCREASE_CONTRAST",
+            "value" : "1"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "900"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "800"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    },
+    {
+      "id" : "7831C20F-F2BC-4070-A807-E2C0C5F25854",
+      "name" : "Large Text Reduced Motion",
+      "options" : {
+        "environmentVariableEntries" : [
+          {
+            "key" : "BLACKBOX_DATA_ROOT",
+            "value" : "$(TEMP_DIR)\/Blackbox-XCUITest-$(TEST_RUN_ID)"
+          },
+          {
+            "key" : "BLACKBOX_SYNTHETIC_FIXTURE",
+            "value" : "deterministic"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_APPEARANCE",
+            "value" : "light"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_DYNAMIC_TYPE_SIZE",
+            "value" : "accessibility3"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_REDUCE_MOTION",
+            "value" : "1"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_WIDTH",
+            "value" : "1440"
+          },
+          {
+            "key" : "BLACKBOX_UI_TEST_HEIGHT",
+            "value" : "980"
+          }
+        ],
+        "language" : "en-GB",
+        "region" : "GB"
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "defaultTestExecutionTimeAllowance" : 180,
+    "maximumTestExecutionTimeAllowance" : 300,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Blackbox.xcodeproj",
+      "identifier" : "A00000000000000000000010",
+      "name" : "Blackbox"
+    },
+    "testTimeoutsEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blackbox.xcodeproj",
+        "identifier" : "A00000000000000000000012",
+        "name" : "BlackboxUITests"
+      }
+    }
+  ],
+  "version" : 1
+}
