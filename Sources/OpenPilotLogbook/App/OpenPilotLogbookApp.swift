@@ -1147,6 +1147,14 @@ final class LogbookStore: ObservableObject {
             announce("Save or discard unsaved changes before moving this draft to Trash")
             return
         }
+        guard prepareEditorForContextChange() else {
+            announce("Could not move draft to Trash because the editor could not finish editing")
+            return
+        }
+        guard !isDraftDirty else {
+            announce("Save or discard unsaved changes before moving this draft to Trash")
+            return
+        }
         do {
             try moveFlightToTrash(id: selectedFlightID, origin: "manual")
             clearSessionUndoForContextChange()
@@ -1176,6 +1184,14 @@ final class LogbookStore: ObservableObject {
             announce("Could not restore from Undo because another draft has unsaved changes")
             return
         }
+        guard prepareEditorForContextChange() else {
+            announce("Could not restore from Undo because the editor could not finish editing")
+            return
+        }
+        guard !isDraftDirty else {
+            announce("Could not restore from Undo because another draft has unsaved changes")
+            return
+        }
         do {
             try repository.restoreFromTrash(id: id, origin: "undo")
             refresh()
@@ -1191,6 +1207,14 @@ final class LogbookStore: ObservableObject {
     }
 
     private func moveFlightToTrashForRedo(id: Int64, contextID: UUID) {
+        guard draftContextID == contextID, !isDraftDirty, draftFlight?.id == id, selectedFlightID == id else {
+            announce("Could not redo moving the draft because its editor context changed")
+            return
+        }
+        guard prepareEditorForContextChange() else {
+            announce("Could not redo moving the draft because the editor could not finish editing")
+            return
+        }
         guard draftContextID == contextID, !isDraftDirty, draftFlight?.id == id, selectedFlightID == id else {
             announce("Could not redo moving the draft because its editor context changed")
             return
@@ -1248,6 +1272,21 @@ final class LogbookStore: ObservableObject {
         sessionUndoManager.removeAllActions()
         clearSecondaryResponderUndoManagers()
         updateSessionUndoCommands()
+    }
+
+    /// Relinquish the shared AppKit field editor before SwiftUI replaces the
+    /// selected record. Otherwise AppKit can rebind that editor to the newly
+    /// selected flight and leave an older text action above the Blackbox
+    /// operation on the Undo stack.
+    private func prepareEditorForContextChange() -> Bool {
+        guard shouldAttachWindowUndoManager, let window = sessionUndoWindow else { return true }
+        guard window.makeFirstResponder(nil) else { return false }
+        // Controls such as the minute steppers commit buffered text only when
+        // focus leaves. Recompute synchronously before deciding whether this is
+        // still a clean context change; preserve native Undo if it became dirty.
+        draftDidChange()
+        if !isDraftDirty { clearSecondaryResponderUndoManagers() }
+        return true
     }
 
     private func registerSessionUndo(actionName: String, action: @escaping (LogbookStore) -> Void) {

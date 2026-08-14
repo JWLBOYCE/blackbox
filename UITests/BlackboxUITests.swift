@@ -124,9 +124,9 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(importedFlight.waitForExistence(timeout: 5))
         importedFlight.click()
 
-        // Verify immutable entered time while moving through the editor in its
-        // natural top-to-bottom order. Returning from the expanded Advanced
-        // section can evict this lazy grid row from the accessibility tree.
+        // Offscreen LazyVGrid rows are intentionally absent from AppKit's
+        // accessibility snapshot. scrollEditor advances downward until Total
+        // materialises, then uses its real frame for the final positioning.
         let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
         scrollEditor(untilHittable: totalTimeQuery)
         let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
@@ -241,8 +241,9 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("z", modifierFlags: [.command, .shift])
         XCTAssertEqual(textField("Flight number").value as? String, "UNDO-ORDER")
 
-        let suggestionFixture = element(containing: "BX-NIGHT", type: .staticText)
+        let suggestionFixture = flightRow(containing: "BX-NIGHT")
         XCTAssertTrue(suggestionFixture.waitForExistence(timeout: 5))
+        XCTAssertTrue(suggestionFixture.isHittable)
         suggestionFixture.click()
         let unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Discard Changes"].click()
@@ -518,11 +519,19 @@ final class BlackboxUITests: XCTestCase {
         openSection("Reports", subtitle: "CSV and print")
         XCTAssertTrue(element(containing: "CAA-format export currently includes exactly 1 finalised active record", type: .staticText).waitForExistence(timeout: 5))
         let destination = dataRoot.appendingPathComponent("Exports", isDirectory: true)
-        app.buttons["Choose Export Folder"].click()
-        let panelService = XCUIApplication(bundleIdentifier: "com.apple.appkit.xpc.openAndSavePanelService")
-        chooseInOpenPanel(destination, hostedBy: panelService)
+        let chooseExportFolder = app.buttons["reports.chooseExportFolder"]
+        chooseExportFolder.click()
+        XCTAssertTrue(
+            waitForDisabled(app.windows.firstMatch, timeout: 8),
+            "The native export folder panel did not attach modally"
+        )
+        chooseExportFolderInSystemPanel(destination)
         let exportAlert = dialog("Confirm CAA-format Export")
         XCTAssertTrue(element(containing: "exactly 1 finalised active record", type: .staticText).exists)
+        XCTAssertTrue(
+            element(containing: destination.path, type: .staticText).exists,
+            "The native folder panel must return the exact synthetic export destination"
+        )
         exportAlert.buttons["Export CAA-format Report"].click()
         XCTAssertTrue(element(containing: "Exported 1 finalised record", type: .staticText).waitForExistence(timeout: 8))
         let exportedFiles = try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
@@ -751,6 +760,10 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
         XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
         for _ in 0..<16 where !isSafelyVisible(element, in: editor) {
+            guard element.exists else {
+                editor.swipeUp(velocity: .slow)
+                continue
+            }
             let targetFrame = element.frame
             let editorFrame = editor.frame
             if !targetFrame.isEmpty, targetFrame.midY < editorFrame.midY {
@@ -843,6 +856,16 @@ final class BlackboxUITests: XCTestCase {
         app.descendants(matching: .any)["flights.table"]
     }
 
+    private func flightRow(containing value: String) -> XCUIElement {
+        flightsTable().descendants(matching: .outlineRow)
+            .containing(NSPredicate(
+                format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@",
+                value,
+                value
+            ))
+            .firstMatch
+    }
+
     private func element(containing value: String, type: XCUIElement.ElementType) -> XCUIElement {
         app.descendants(matching: type)
             .matching(NSPredicate(format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", value, value))
@@ -889,15 +912,8 @@ final class BlackboxUITests: XCTestCase {
         return nil
     }
 
-    private func chooseInOpenPanel(_ url: URL, hostedBy panelApplication: XCUIApplication? = nil) {
-        let panelHost = panelApplication ?? app!
-        if let panelApplication {
-            XCTAssertTrue(
-                panelApplication.windows.firstMatch.waitForExistence(timeout: 8),
-                "The AppKit open/save panel service did not present a window"
-            )
-        }
-
+    private func chooseInOpenPanel(_ url: URL) {
+        let panelHost = app!
         // File panels can briefly move between sheet, dialog, and window roles
         // while AppKit attaches them. The explicit NSOpenPanel used for folder
         // selection is hosted by AppKit's panel service; SwiftUI file importers
@@ -935,10 +951,31 @@ final class BlackboxUITests: XCTestCase {
         // successful selection can immediately replace it with that next sheet.
     }
 
+    /// NSOpenPanel directory selection is hosted by an AppKit XPC view service
+    /// on macOS 26. XCTest cannot enumerate that service as a standalone
+    /// XCUIApplication, but synthesized keys still reach its focused field and
+    /// default action. The exact synthetic export postconditions prove that the
+    /// real panel returned the requested directory.
+    private func chooseExportFolderInSystemPanel(_ url: URL) {
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        app.typeText(url.path)
+        app.typeKey(.return, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+    }
+
     private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let predicate = NSPredicate { object, _ in
             guard let element = object as? XCUIElement else { return false }
             return element.exists && element.isEnabled
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForDisabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate { object, _ in
+            guard let element = object as? XCUIElement else { return false }
+            return element.exists && !element.isEnabled
         }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed

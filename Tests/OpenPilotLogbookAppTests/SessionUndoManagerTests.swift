@@ -300,6 +300,136 @@ struct SessionUndoManagerTests {
         #expect(fixture.store.canUndoSessionAction)
     }
 
+    @Test("Trash ends stale field editing before selecting the fallback flight")
+    func trashUndoCannotMutateFallbackFlight() throws {
+        let fixture = try makeStore(injectUndoManager: false)
+        defer { fixture.cleanUp() }
+
+        let fallbackID = try fixture.store.repository.saveDraft(FlightEntry(
+            date: Date(timeIntervalSinceReferenceDate: 799_999_000),
+            departure: "EHAM",
+            arrival: "EDDF",
+            aircraftID: "G-FALLBACK",
+            totalMinutes: 45
+        ), origin: "app_test_fixture")
+        let trashedID = try fixture.store.repository.saveDraft(FlightEntry(
+            date: Date(timeIntervalSinceReferenceDate: 800_000_000),
+            departure: "EGLL",
+            arrival: "EHAM",
+            aircraftID: "G-TRASH",
+            totalMinutes: 60
+        ), origin: "app_test_fixture")
+        fixture.store.refresh()
+        fixture.store.selectFlightImmediately(id: trashedID)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let fieldEditor = IsolatedUndoTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        window.contentView = fieldEditor
+        let delegate = AppDelegate()
+        delegate.bind(window: window, store: fixture.store)
+        _ = window.makeFirstResponder(fieldEditor)
+
+        let staleProbe = NativeUndoProbe()
+        fieldEditor.isolatedUndoManager.beginUndoGrouping()
+        fieldEditor.isolatedUndoManager.registerUndo(withTarget: staleProbe) { target in
+            target.undoCount += 1
+        }
+        fieldEditor.isolatedUndoManager.endUndoGrouping()
+        #expect(fieldEditor.isolatedUndoManager.canUndo)
+
+        fixture.store.deleteSelectedFlight()
+
+        #expect(!fieldEditor.isolatedUndoManager.canUndo)
+        #expect(fixture.store.selectedFlightID == fallbackID)
+        #expect(fixture.store.draftFlight?.departure == "EHAM")
+        #expect(fixture.store.draftFlight?.arrival == "EDDF")
+        #expect(!fixture.store.isDraftDirty)
+
+        UndoCommandRouter(
+            store: fixture.store,
+            activeResponderUndoManager: { fieldEditor.isolatedUndoManager }
+        ).undo()
+
+        #expect(staleProbe.undoCount == 0)
+        #expect(try fixture.store.repository.flight(id: trashedID)?.recordState == .draft)
+        #expect(fixture.store.selectedFlightID == trashedID)
+        #expect(fixture.store.statusMessage == "Restored draft from Trash")
+
+        UndoCommandRouter(
+            store: fixture.store,
+            activeResponderUndoManager: { fieldEditor.isolatedUndoManager }
+        ).redo()
+
+        #expect(try fixture.store.repository.flight(id: trashedID)?.recordState == .trashed)
+        #expect(fixture.store.selectedFlightID == fallbackID)
+        #expect(fixture.store.draftFlight?.departure == "EHAM")
+        #expect(fixture.store.draftFlight?.arrival == "EDDF")
+        #expect(!fixture.store.isDraftDirty)
+
+        UndoCommandRouter(
+            store: fixture.store,
+            activeResponderUndoManager: { fieldEditor.isolatedUndoManager }
+        ).undo()
+
+        #expect(try fixture.store.repository.flight(id: trashedID)?.recordState == .draft)
+        #expect(fixture.store.selectedFlightID == trashedID)
+        #expect(staleProbe.undoCount == 0)
+    }
+
+    @Test("Trash blocks a focus-loss edit without clearing its native Undo")
+    func trashRechecksBufferedEditBeforeMutation() throws {
+        let fixture = try makeStore(injectUndoManager: false)
+        defer { fixture.cleanUp() }
+
+        let id = try fixture.store.repository.saveDraft(FlightEntry(
+            date: Date(timeIntervalSinceReferenceDate: 800_000_000),
+            departure: "EGLL",
+            arrival: "EHAM",
+            aircraftID: "G-BUFFER",
+            totalMinutes: 60,
+            remarks: "Persisted"
+        ), origin: "app_test_fixture")
+        fixture.store.refresh()
+        fixture.store.selectFlightImmediately(id: id)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let fieldEditor = CommitOnResignUndoTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        fieldEditor.onResign = {
+            fixture.store.draftFlight?.remarks = "Buffered until focus loss"
+        }
+        window.contentView = fieldEditor
+        let delegate = AppDelegate()
+        delegate.bind(window: window, store: fixture.store)
+        #expect(window.makeFirstResponder(fieldEditor))
+
+        let nativeProbe = NativeUndoProbe()
+        fieldEditor.isolatedUndoManager.beginUndoGrouping()
+        fieldEditor.isolatedUndoManager.registerUndo(withTarget: nativeProbe) { target in
+            target.undoCount += 1
+        }
+        fieldEditor.isolatedUndoManager.endUndoGrouping()
+        #expect(fieldEditor.isolatedUndoManager.canUndo)
+        #expect(!fixture.store.isDraftDirty)
+
+        fixture.store.deleteSelectedFlight()
+
+        #expect(try fixture.store.repository.flight(id: id)?.recordState == .draft)
+        #expect(fixture.store.draftFlight?.remarks == "Buffered until focus loss")
+        #expect(fixture.store.isDraftDirty)
+        #expect(fieldEditor.isolatedUndoManager.canUndo)
+        #expect(fixture.store.statusMessage == "Save or discard unsaved changes before moving this draft to Trash")
+    }
+
     @Test("Trash Undo never displaces another dirty draft")
     func trashUndoRefusesDirtyEditor() throws {
         let fixture = try makeStore()
@@ -386,7 +516,7 @@ private final class NativeUndoProbe: NSObject {
 }
 
 @MainActor
-private final class IsolatedUndoTextView: NSTextView {
+private class IsolatedUndoTextView: NSTextView {
     let isolatedUndoManager: UndoManager = {
         let manager = UndoManager()
         manager.groupsByEvent = false
@@ -394,4 +524,14 @@ private final class IsolatedUndoTextView: NSTextView {
     }()
 
     override var undoManager: UndoManager? { isolatedUndoManager }
+}
+
+@MainActor
+private final class CommitOnResignUndoTextView: IsolatedUndoTextView {
+    var onResign: (() -> Void)?
+
+    override func resignFirstResponder() -> Bool {
+        onResign?()
+        return super.resignFirstResponder()
+    }
 }
