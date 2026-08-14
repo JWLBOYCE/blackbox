@@ -125,10 +125,10 @@ final class BlackboxUITests: XCTestCase {
         importedFlight.click()
 
         // Offscreen LazyVGrid rows are intentionally absent from AppKit's
-        // accessibility snapshot. scrollEditor advances downward until Total
-        // materialises, then uses its real frame for the final positioning.
+        // accessibility snapshot. Stop on the first snapshot where Total
+        // materialises; a corrective full swipe can overshoot the lazy row.
         let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
-        scrollEditor(untilHittable: totalTimeQuery)
+        scrollEditor(untilExists: totalTimeQuery)
         let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
         XCTAssertTrue(visibleTotalTime.waitForExistence(timeout: 5))
         XCTAssertFalse(visibleTotalTime.isEnabled, "Finalised entered times must remain immutable")
@@ -188,11 +188,14 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Restored draft from Trash"].waitForExistence(timeout: 5))
 
         openSection("History", subtitle: "Trash and audit trail")
-        let trashTable = app.tables["history.trash.table"]
+        let trashTable = app.descendants(matching: .any)["history.trash.table"]
         XCTAssertTrue(trashTable.waitForExistence(timeout: 5))
-        let trashRows = trashTable.descendants(matching: .tableRow)
+        let trashRows = trashTable.descendants(matching: .outlineRow)
         XCTAssertGreaterThanOrEqual(trashRows.count, 2)
-        trashRows.element(boundBy: 0).click()
+        let firstTrashCell = trashRows.element(boundBy: 0).descendants(matching: .cell).firstMatch
+        XCTAssertTrue(firstTrashCell.waitForExistence(timeout: 3))
+        XCTAssertTrue(firstTrashCell.isHittable)
+        firstTrashCell.click()
         app.typeKey(.downArrow, modifierFlags: .shift)
         let restoreSelected = app.buttons["history.trash.restoreSelected"]
         XCTAssertTrue(restoreSelected.waitForExistence(timeout: 3))
@@ -243,8 +246,10 @@ final class BlackboxUITests: XCTestCase {
 
         let suggestionFixture = flightRow(containing: "BX-NIGHT")
         XCTAssertTrue(suggestionFixture.waitForExistence(timeout: 5))
-        XCTAssertTrue(suggestionFixture.isHittable)
-        suggestionFixture.click()
+        let suggestionFixtureCell = suggestionFixture.descendants(matching: .cell).firstMatch
+        XCTAssertTrue(suggestionFixtureCell.waitForExistence(timeout: 3))
+        XCTAssertTrue(suggestionFixtureCell.isHittable)
+        suggestionFixtureCell.click()
         let unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Discard Changes"].click()
 
@@ -774,8 +779,30 @@ final class BlackboxUITests: XCTestCase {
         }
         XCTAssertTrue(
             isSafelyVisible(element, in: editor),
-            "Could not reveal \(element.identifier) inside the flight editor viewport"
+            "Could not reveal the requested element inside the flight editor viewport"
         )
+    }
+
+    /// Lazy editor content can be inspected without being a hit target. Stop as
+    /// soon as the requested row materialises so a full-velocity corrective
+    /// swipe cannot carry it past the opposite edge of the viewport.
+    private func scrollEditor(untilExists element: XCUIElement) {
+        let identifiedEditor = app.scrollViews["flight.editor.scroll"]
+        let editor: XCUIElement
+        if identifiedEditor.waitForExistence(timeout: 2) {
+            editor = identifiedEditor
+        } else {
+            let scrollViews = app.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0, "Missing flight editor scroll container")
+            editor = scrollViews.element(boundBy: max(0, scrollViews.count - 1))
+        }
+        XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
+        XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
+
+        for _ in 0..<16 where !element.exists {
+            editor.swipeUp(velocity: .slow)
+        }
+        XCTAssertTrue(element.waitForExistence(timeout: 2), "Could not materialise the requested editor element")
     }
 
     private func isSafelyVisible(_ element: XCUIElement, in editor: XCUIElement) -> Bool {
@@ -959,8 +986,16 @@ final class BlackboxUITests: XCTestCase {
     private func chooseExportFolderInSystemPanel(_ url: URL) {
         app.typeKey("g", modifierFlags: [.command, .shift])
         app.typeText(url.path)
-        app.typeKey(.return, modifierFlags: [])
-        app.typeKey(.return, modifierFlags: [])
+        for _ in 0..<2 {
+            app.typeKey(.return, modifierFlags: [])
+            if dialogExists("Confirm CAA-format Export", timeout: 5) { return }
+        }
+    }
+
+    private func dialogExists(_ title: String, timeout: TimeInterval) -> Bool {
+        let titlePredicate = NSPredicate(format: "label == %@ OR value == %@", title, title)
+        return app.descendants(matching: .any).matching(titlePredicate).firstMatch
+            .waitForExistence(timeout: timeout)
     }
 
     private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
