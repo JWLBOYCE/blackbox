@@ -63,12 +63,11 @@ struct ReportsView: View {
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("reports.chooseExportFolder")
 
-                Button {
-                    if let file = store.lastExport?.csv { store.platformServices.reveal([file]) }
-                } label: {
+                Button(action: store.revealLastExport) {
                     Label("Reveal Last Export", systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
+                .disabled(store.lastExport == nil)
                 .accessibilityIdentifier("reports.revealLastExport")
                 Spacer()
             }

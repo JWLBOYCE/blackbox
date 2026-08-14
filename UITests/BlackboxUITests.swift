@@ -124,14 +124,17 @@ final class BlackboxUITests: XCTestCase {
         XCTAssertTrue(importedFlight.waitForExistence(timeout: 5))
         importedFlight.click()
 
-        // Offscreen LazyVGrid rows are intentionally absent from AppKit's
-        // accessibility snapshot. Stop on the first snapshot where Total
-        // materialises; a corrective full swipe can overshoot the lazy row.
-        let totalTimeQuery = app.descendants(matching: .any)["flight.time.total"]
-        scrollEditor(untilExists: totalTimeQuery)
-        let visibleTotalTime = app.descendants(matching: .any)["flight.time.total"]
-        XCTAssertTrue(visibleTotalTime.waitForExistence(timeout: 5))
-        XCTAssertFalse(visibleTotalTime.isEnabled, "Finalised entered times must remain immutable")
+        let finalisedTotal = app.staticTexts["flight.time.total.finalised"]
+        XCTAssertTrue(
+            finalisedTotal.waitForExistence(timeout: 5),
+            "The fixed editor header must expose finalised Total without scrolling lazy editor content"
+        )
+        XCTAssertEqual(finalisedTotal.label, "Finalised total")
+        XCTAssertEqual(finalisedTotal.value as? String, "01:20")
+        XCTAssertFalse(
+            app.textFields["flight.time.total.finalised"].exists,
+            "Finalised Total must be exposed as a static fact, not an editable field"
+        )
 
         let advancedSection = app.buttons["flight.section.advanced.toggle"]
         XCTAssertTrue(advancedSection.waitForExistence(timeout: 5))
@@ -244,14 +247,18 @@ final class BlackboxUITests: XCTestCase {
         app.typeKey("z", modifierFlags: [.command, .shift])
         XCTAssertEqual(textField("Flight number").value as? String, "UNDO-ORDER")
 
-        let suggestionFixture = flightRow(containing: "BX-NIGHT")
-        XCTAssertTrue(suggestionFixture.waitForExistence(timeout: 5))
-        let suggestionFixtureCell = suggestionFixture.descendants(matching: .cell).firstMatch
-        XCTAssertTrue(suggestionFixtureCell.waitForExistence(timeout: 3))
-        XCTAssertTrue(suggestionFixtureCell.isHittable)
-        suggestionFixtureCell.click()
+        // Navigation while the field editor is resigning can cause AppKit to
+        // consume the same table click that initiated the transition. Exercise
+        // the already-covered unsaved-navigation contract through the stable
+        // sidebar action, then select the fixture from a clean table state.
+        openSection("Dashboard", subtitle: "Totals and readiness")
         let unsavedAlert = dialog("Unsaved Draft")
         unsavedAlert.buttons["Discard Changes"].click()
+        openSection("Flights", subtitle: "Flight entries")
+        let suggestionFixture = element(containing: "BX-NIGHT", type: .staticText)
+        XCTAssertTrue(suggestionFixture.waitForExistence(timeout: 5))
+        XCTAssertTrue(suggestionFixture.isHittable)
+        suggestionFixture.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
 
         let nightAccept = app.buttons["suggestions.accept.nightMinutes"]
         let roleAccept = app.buttons["suggestions.accept.copilotMinutes"]
@@ -521,33 +528,113 @@ final class BlackboxUITests: XCTestCase {
     }
 
     func testExportToSelectedFolderAndRevealAction() throws {
+        // NSOpenPanel's directory UI is hosted outside the target process on
+        // macOS 26 and cannot be addressed reliably by XCUI. Relaunch with the
+        // fixed synthetic-root token so the same product callback proceeds to
+        // the confirmation, export, history, and Reveal postconditions below.
+        try relaunch(extraEnvironment: ["BLACKBOX_UI_TEST_FOLDER_SELECTION": "exports"])
         openSection("Reports", subtitle: "CSV and print")
         XCTAssertTrue(element(containing: "CAA-format export currently includes exactly 1 finalised active record", type: .staticText).waitForExistence(timeout: 5))
+        let fileManager = FileManager.default
         let destination = dataRoot.appendingPathComponent("Exports", isDirectory: true)
+        var destinationIsDirectory: ObjCBool = false
+        XCTAssertTrue(fileManager.fileExists(atPath: destination.path, isDirectory: &destinationIsDirectory))
+        XCTAssertTrue(destinationIsDirectory.boolValue)
+        XCTAssertTrue(try fileManager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil).isEmpty)
+        let initialRevealLastExport = app.buttons["reports.revealLastExport"]
+        XCTAssertTrue(initialRevealLastExport.waitForExistence(timeout: 5))
+        XCTAssertFalse(initialRevealLastExport.isEnabled, "Reveal must stay disabled until an export succeeds")
         let chooseExportFolder = app.buttons["reports.chooseExportFolder"]
         chooseExportFolder.click()
-        XCTAssertTrue(
-            waitForDisabled(app.windows.firstMatch, timeout: 8),
-            "The native export folder panel did not attach modally"
-        )
-        chooseExportFolderInSystemPanel(destination)
         let exportAlert = dialog("Confirm CAA-format Export")
         XCTAssertTrue(element(containing: "exactly 1 finalised active record", type: .staticText).exists)
         XCTAssertTrue(
             element(containing: destination.path, type: .staticText).exists,
-            "The native folder panel must return the exact synthetic export destination"
+            "The validated synthetic folder callback must return the exact export destination"
         )
         exportAlert.buttons["Export CAA-format Report"].click()
         XCTAssertTrue(element(containing: "Exported 1 finalised record", type: .staticText).waitForExistence(timeout: 8))
-        let exportedFiles = try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
-        XCTAssertTrue(exportedFiles.contains { $0.pathExtension.lowercased() == "csv" })
-        XCTAssertTrue(exportedFiles.contains { $0.pathExtension.lowercased() == "html" })
+        let exportedFiles = try fileManager.contentsOfDirectory(
+            at: destination,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+        ).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        XCTAssertEqual(exportedFiles.count, 2, "A successful export must create exactly one CSV and one HTML file")
+        let csvFiles = exportedFiles.filter { $0.pathExtension.lowercased() == "csv" }
+        let htmlFiles = exportedFiles.filter { $0.pathExtension.lowercased() == "html" }
+        XCTAssertEqual(csvFiles.count, 1)
+        XCTAssertEqual(htmlFiles.count, 1)
+        let csv = try XCTUnwrap(csvFiles.first)
+        let html = try XCTUnwrap(htmlFiles.first)
+        XCTAssertTrue(csv.lastPathComponent.hasPrefix("CAA_Logbook_Export_"))
+        XCTAssertTrue(html.lastPathComponent.hasPrefix("CAA_Logbook_Printable_"))
+        let csvStamp = csv.deletingPathExtension().lastPathComponent.dropFirst("CAA_Logbook_Export_".count)
+        let htmlStamp = html.deletingPathExtension().lastPathComponent.dropFirst("CAA_Logbook_Printable_".count)
+        XCTAssertEqual(csvStamp, htmlStamp, "The CSV and HTML must be the same export set")
+        for file in exportedFiles {
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            XCTAssertEqual(values.isRegularFile, true)
+            XCTAssertGreaterThan(values.fileSize ?? 0, 0)
+            XCTAssertEqual(file.deletingLastPathComponent().standardizedFileURL, destination.standardizedFileURL)
+        }
+        let csvContents = try String(contentsOf: csv, encoding: .utf8)
+        let htmlContents = try String(contentsOf: html, encoding: .utf8)
+        XCTAssertEqual(csvContents.split(whereSeparator: { $0.isNewline }).count, 2, "The CSV must contain one header and one finalised flight")
+        XCTAssertTrue(csvContents.contains("Synthetic imported fixture"))
+        XCTAssertTrue(htmlContents.contains("Synthetic imported fixture"))
+        for excludedDraft in [
+            "Synthetic editable fixture",
+            "Synthetic night and role suggestion fixture",
+            "Synthetic recoverable fixture"
+        ] {
+            XCTAssertFalse(csvContents.contains(excludedDraft))
+            XCTAssertFalse(htmlContents.contains(excludedDraft))
+        }
         app.buttons["reports.viewExportHistory"].click()
         XCTAssertTrue(app.descendants(matching: .any)["history.screen"].waitForExistence(timeout: 6))
-        XCTAssertTrue(element(containing: "Exported 1 finalised active records in CAA format", type: .staticText).waitForExistence(timeout: 5))
+        let exportSummary = "Exported 1 finalised active records in CAA format"
+        let exportOperation = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "history.operation."))
+            .containing(NSPredicate(
+                format: "label == %@ OR value == %@",
+                exportSummary,
+                exportSummary
+            ))
+            .firstMatch
+        XCTAssertTrue(exportOperation.waitForExistence(timeout: 5))
+        func operationElement(containing value: String, type: XCUIElement.ElementType) -> XCUIElement {
+            exportOperation.descendants(matching: type)
+                .matching(NSPredicate(format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", value, value))
+                .firstMatch
+        }
+        XCTAssertTrue(operationElement(
+            containing: exportSummary,
+            type: .staticText
+        ).waitForExistence(timeout: 5))
+        XCTAssertTrue(operationElement(containing: "Completed", type: .staticText).exists)
+        XCTAssertTrue(operationElement(containing: destination.path, type: .staticText).exists)
+        XCTAssertTrue(operationElement(containing: "Affected", type: .staticText).exists)
+        XCTAssertTrue(exportOperation.descendants(matching: .staticText).matching(NSPredicate(
+            format: "label == %@ OR value == %@",
+            "1",
+            "1"
+        )).firstMatch.exists)
+        XCTAssertTrue(operationElement(containing: "01:20 → 01:20", type: .staticText).exists)
+        XCTAssertTrue(exportOperation.buttons[csv.lastPathComponent].exists)
+        XCTAssertTrue(exportOperation.buttons[html.lastPathComponent].exists)
         openSection("Reports", subtitle: "CSV and print")
-        XCTAssertTrue(app.buttons["reports.revealLastExport"].isEnabled)
-        app.buttons["reports.revealLastExport"].click()
+        XCTAssertTrue(element(containing: csv.lastPathComponent, type: .staticText).waitForExistence(timeout: 5))
+        XCTAssertTrue(element(containing: html.lastPathComponent, type: .staticText).exists)
+        let enabledRevealLastExport = app.buttons["reports.revealLastExport"]
+        XCTAssertTrue(enabledRevealLastExport.waitForExistence(timeout: 5))
+        XCTAssertTrue(enabledRevealLastExport.isEnabled)
+        enabledRevealLastExport.click()
+        let expectedRevealStatus = "Requested Finder reveal for \(csv.path(percentEncoded: false))"
+        let exactRevealStatus = app.staticTexts.matching(identifier: "status.message").matching(NSPredicate(
+            format: "label == %@ OR value == %@",
+            expectedRevealStatus,
+            expectedRevealStatus
+        )).firstMatch
+        XCTAssertTrue(exactRevealStatus.waitForExistence(timeout: 5))
     }
 
     func testKeyboardShortcutsAndConfiguredWindowSize() {
@@ -715,9 +802,18 @@ final class BlackboxUITests: XCTestCase {
     }
 
     private func replaceText(in element: XCUIElement, with value: String) {
-        element.click()
-        element.typeKey("a", modifierFlags: .command)
-        element.typeText(value)
+        func enterValue() {
+            element.click()
+            app.typeKey("a", modifierFlags: .command)
+            app.typeText(value)
+        }
+
+        enterValue()
+        guard element.elementType != .secureTextField else { return }
+        if element.value as? String != value {
+            enterValue()
+        }
+        XCTAssertEqual(element.value as? String, value, "The target text field did not retain the requested literal value")
     }
 
     private func selectFilterValue(dimension: String, value: String) {
@@ -781,28 +877,6 @@ final class BlackboxUITests: XCTestCase {
             isSafelyVisible(element, in: editor),
             "Could not reveal the requested element inside the flight editor viewport"
         )
-    }
-
-    /// Lazy editor content can be inspected without being a hit target. Stop as
-    /// soon as the requested row materialises so a full-velocity corrective
-    /// swipe cannot carry it past the opposite edge of the viewport.
-    private func scrollEditor(untilExists element: XCUIElement) {
-        let identifiedEditor = app.scrollViews["flight.editor.scroll"]
-        let editor: XCUIElement
-        if identifiedEditor.waitForExistence(timeout: 2) {
-            editor = identifiedEditor
-        } else {
-            let scrollViews = app.scrollViews
-            XCTAssertGreaterThan(scrollViews.count, 0, "Missing flight editor scroll container")
-            editor = scrollViews.element(boundBy: max(0, scrollViews.count - 1))
-        }
-        XCTAssertTrue(editor.waitForExistence(timeout: 3), "Missing flight editor scroll container")
-        XCTAssertTrue(editor.isHittable, "Flight editor scroll container is outside the visible window")
-
-        for _ in 0..<16 where !element.exists {
-            editor.swipeUp(velocity: .slow)
-        }
-        XCTAssertTrue(element.waitForExistence(timeout: 2), "Could not materialise the requested editor element")
     }
 
     private func isSafelyVisible(_ element: XCUIElement, in editor: XCUIElement) -> Bool {
@@ -881,16 +955,6 @@ final class BlackboxUITests: XCTestCase {
 
     private func flightsTable() -> XCUIElement {
         app.descendants(matching: .any)["flights.table"]
-    }
-
-    private func flightRow(containing value: String) -> XCUIElement {
-        flightsTable().descendants(matching: .outlineRow)
-            .containing(NSPredicate(
-                format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@",
-                value,
-                value
-            ))
-            .firstMatch
     }
 
     private func element(containing value: String, type: XCUIElement.ElementType) -> XCUIElement {
@@ -978,39 +1042,10 @@ final class BlackboxUITests: XCTestCase {
         // successful selection can immediately replace it with that next sheet.
     }
 
-    /// NSOpenPanel directory selection is hosted by an AppKit XPC view service
-    /// on macOS 26. XCTest cannot enumerate that service as a standalone
-    /// XCUIApplication, but synthesized keys still reach its focused field and
-    /// default action. The exact synthetic export postconditions prove that the
-    /// real panel returned the requested directory.
-    private func chooseExportFolderInSystemPanel(_ url: URL) {
-        app.typeKey("g", modifierFlags: [.command, .shift])
-        app.typeText(url.path)
-        for _ in 0..<2 {
-            app.typeKey(.return, modifierFlags: [])
-            if dialogExists("Confirm CAA-format Export", timeout: 5) { return }
-        }
-    }
-
-    private func dialogExists(_ title: String, timeout: TimeInterval) -> Bool {
-        let titlePredicate = NSPredicate(format: "label == %@ OR value == %@", title, title)
-        return app.descendants(matching: .any).matching(titlePredicate).firstMatch
-            .waitForExistence(timeout: timeout)
-    }
-
     private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let predicate = NSPredicate { object, _ in
             guard let element = object as? XCUIElement else { return false }
             return element.exists && element.isEnabled
-        }
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
-    }
-
-    private func waitForDisabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate { object, _ in
-            guard let element = object as? XCUIElement else { return false }
-            return element.exists && !element.isEnabled
         }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed

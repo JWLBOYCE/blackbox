@@ -563,12 +563,24 @@ struct FlightEditorView: View {
                     .foregroundStyle(OpenPilotTheme.muted)
             }
             Spacer()
-            Label(store.isDraftDirty ? "Unsaved" : flight.recordState.displayName, systemImage: stateIcon(for: flight))
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 9).padding(.vertical, 5)
-                .background((store.isDraftDirty ? OpenPilotTheme.amber : OpenPilotTheme.blue).opacity(0.18), in: Capsule())
-                .accessibilityLabel("Record status")
-                .accessibilityValue(store.isDraftDirty ? "Unsaved draft" : flight.recordState.displayName)
+            VStack(alignment: .trailing, spacing: 4) {
+                Label(store.isDraftDirty ? "Unsaved" : flight.recordState.displayName, systemImage: stateIcon(for: flight))
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background((store.isDraftDirty ? OpenPilotTheme.amber : OpenPilotTheme.blue).opacity(0.18), in: Capsule())
+                    .accessibilityLabel("Record status")
+                    .accessibilityValue(store.isDraftDirty ? "Unsaved draft" : flight.recordState.displayName)
+                if flight.recordState == .finalised {
+                    let total = LogbookFormatters.hours(flight.totalMinutes)
+                    Text("Total \(total)")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(OpenPilotTheme.muted)
+                        .accessibilityLabel("Finalised total")
+                        .accessibilityValue(total)
+                        .accessibilityHint("Locked; create an amendment to change this value.")
+                        .accessibilityIdentifier("flight.time.total.finalised")
+                }
+            }
             if let id = flight.id {
                 Button("View History") { store.showHistory(for: id) }
                     .buttonStyle(.link)

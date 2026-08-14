@@ -25,9 +25,11 @@ enum UITestLaunchConfiguration {
     private static let scenarioKey = "BLACKBOX_UI_TEST_SCENARIO"
     private static let restoreFailureKey = "BLACKBOX_UI_TEST_RESTORE_FAILURE_STAGE"
     private static let saveFailureKey = "BLACKBOX_UI_TEST_SAVE_FAILURE"
+    private static let folderSelectionKey = "BLACKBOX_UI_TEST_FOLDER_SELECTION"
     private static let rootKey = "BLACKBOX_DATA_ROOT"
     private static let snapshotKey = "OPENPILOT_SNAPSHOT_PATH"
     private static let markerName = ".blackbox-synthetic-ui-test-root"
+    private static let markerContents = "Blackbox deterministic UI fixture\n"
     private static let allowedRootPrefixes = ["Blackbox-XCUITest-", "Blackbox-Xcode-Debug"]
     private static let isolatedUITestHomePrefix = "Blackbox-XCUITest-Home-"
     private static let uiTestRunnerBundleIdentifier = "uk.co.blackbox.logbook.UITests.xctrunner"
@@ -44,6 +46,7 @@ enum UITestLaunchConfiguration {
         let rawScenario = environment[scenarioKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rawRestoreFailure = environment[restoreFailureKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let rawSaveFailure = environment[saveFailureKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawFolderSelection = environment[folderSelectionKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let requestedScenario = rawScenario.isEmpty ? "standard" : rawScenario.lowercased()
 
         guard isUITest else {
@@ -51,6 +54,7 @@ enum UITestLaunchConfiguration {
             precondition(rawScenario.isEmpty, "\(scenarioKey) is test-only and requires \(argument).")
             precondition(rawRestoreFailure.isEmpty, "\(restoreFailureKey) is test-only and requires \(argument).")
             precondition(rawSaveFailure.isEmpty, "\(saveFailureKey) is test-only and requires \(argument).")
+            precondition(rawFolderSelection.isEmpty, "\(folderSelectionKey) is test-only and requires \(argument).")
             // A snapshot process constructs the app-level store before the
             // snapshot runner creates its own fixture. Point that otherwise
             // unused store at an application-generated temporary root.
@@ -70,6 +74,9 @@ enum UITestLaunchConfiguration {
 
         guard requestedFixture == "deterministic" else {
             preconditionFailure("UI tests require \(fixtureKey)=deterministic.")
+        }
+        guard rawFolderSelection.isEmpty || rawFolderSelection == "exports" else {
+            preconditionFailure("Unsupported synthetic folder selection: \(rawFolderSelection)")
         }
         guard let rawRoot = environment[rootKey], !rawRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             preconditionFailure("UI tests require an isolated \(rootKey).")
@@ -180,6 +187,55 @@ enum UITestLaunchConfiguration {
             preconditionFailure("Unsupported synthetic save-failure value: \(rawValue)")
         }
         return true
+    }
+
+    /// Returns the one folder selection that hosted UI tests may inject when
+    /// AppKit moves NSOpenPanel into its out-of-process panel service. The
+    /// caller supplies only the fixed `exports` token; the destination is
+    /// derived from the already validated, marked synthetic data root. Normal
+    /// launches and every other folder choice continue through NSOpenPanel.
+    static func syntheticFolderSelectionForCurrentLaunch(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let rawValue = environment[folderSelectionKey]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard arguments.contains(argument) else {
+            precondition(rawValue.isEmpty, "\(folderSelectionKey) is test-only and requires \(argument).")
+            return nil
+        }
+        guard !rawValue.isEmpty else { return nil }
+        guard rawValue == "exports" else {
+            preconditionFailure("Unsupported synthetic folder selection: \(rawValue)")
+        }
+        guard environment[fixtureKey]?.trimmingCharacters(in: .whitespacesAndNewlines) == "deterministic",
+              let rawRoot = environment[rootKey],
+              !rawRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            preconditionFailure("Synthetic folder selection requires the deterministic UI fixture and an isolated \(rootKey).")
+        }
+
+        do {
+            let root = try validatedRoot(rawRoot, fileManager: fileManager)
+            let marker = root.appendingPathComponent(markerName)
+            guard try String(contentsOf: marker, encoding: .utf8) == markerContents else {
+                preconditionFailure("Synthetic folder selection requires the marked UI-test root.")
+            }
+            let destination = root
+                .appendingPathComponent("Exports", isDirectory: true)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            var isDirectory: ObjCBool = false
+            guard destination.deletingLastPathComponent() == root,
+                  fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue
+            else {
+                preconditionFailure("Synthetic export selection must be an existing direct child of the UI-test root.")
+            }
+            return destination
+        } catch {
+            preconditionFailure("Refusing unsafe synthetic folder selection: \(error)")
+        }
     }
 
     static func validatedRoot(_ rawRoot: String, fileManager: FileManager) throws -> URL {
@@ -293,7 +349,7 @@ enum UITestLaunchConfiguration {
         }
 
         try fileManager.createDirectory(at: root, withIntermediateDirectories: false)
-        try Data("Blackbox deterministic UI fixture\n".utf8).write(to: marker, options: .atomic)
+        try Data(markerContents.utf8).write(to: marker, options: .atomic)
     }
 
     private static func seedDeterministicFixture(at paths: LogbookPaths, scenario: String) throws {

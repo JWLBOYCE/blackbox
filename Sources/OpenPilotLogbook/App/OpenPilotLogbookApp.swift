@@ -392,6 +392,7 @@ final class LogbookStore: ObservableObject {
     private var persistedDraft: FlightEntry?
     private var pendingExportFolder: URL?
     private let folderAccessStore: FolderAccessStore
+    private let syntheticExportFolderSelection: @MainActor () -> URL?
     private(set) var sessionUndoManager: UndoManager
     private let shouldAttachWindowUndoManager: Bool
     private weak var sessionUndoWindow: NSWindow?
@@ -425,7 +426,10 @@ final class LogbookStore: ObservableObject {
         paths: LogbookPaths = .applicationSupport,
         platformServices: (any PlatformServices)? = nil,
         folderAccessStore: FolderAccessStore? = nil,
-        undoManager: UndoManager? = nil
+        undoManager: UndoManager? = nil,
+        syntheticExportFolderSelection: @escaping @MainActor () -> URL? = {
+            UITestLaunchConfiguration.syntheticFolderSelectionForCurrentLaunch()
+        }
     ) {
         self.paths = paths
         self.repository = LogbookRepository(
@@ -434,6 +438,7 @@ final class LogbookStore: ObservableObject {
         )
         self.platformServices = platformServices ?? MacPlatformServices()
         self.folderAccessStore = folderAccessStore ?? FolderAccessStore()
+        self.syntheticExportFolderSelection = syntheticExportFolderSelection
         self.shouldAttachWindowUndoManager = undoManager == nil
         let resolvedUndoManager = undoManager ?? UndoManager()
         resolvedUndoManager.groupsByEvent = false
@@ -1431,6 +1436,12 @@ final class LogbookStore: ObservableObject {
     }
 
     func chooseAndExportReports() {
+        if let syntheticSelection = syntheticExportFolderSelection() {
+            DispatchQueue.main.async { [weak self] in
+                self?.requestExport(to: syntheticSelection)
+            }
+            return
+        }
         platformServices.chooseFolder(title: "Choose Export Folder", prompt: "Export Here") { [weak self] url in
             guard let self, let url else { return }
             self.requestExport(to: url)
@@ -1439,6 +1450,12 @@ final class LogbookStore: ObservableObject {
 
     func exportToRememberedFolder() {
         requestExport(to: selectedExportFolder)
+    }
+
+    func revealLastExport() {
+        guard let csv = lastExport?.csv else { return }
+        platformServices.reveal([csv])
+        announce("Requested Finder reveal for \(csv.path(percentEncoded: false))")
     }
 
     private func restoreLastVerifiedBackupStatus(from batches: [OperationBatch]) {

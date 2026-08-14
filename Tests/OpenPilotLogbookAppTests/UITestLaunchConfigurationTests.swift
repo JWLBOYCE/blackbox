@@ -12,6 +12,41 @@ struct UITestLaunchConfigurationTests {
 #endif
     }
 
+    @Test("Synthetic folder selection is fixed beneath the marked UI root")
+    func syntheticFolderSelectionIsConfinedToUIRoot() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("Blackbox-XCUITest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let baseEnvironment = [
+            "BLACKBOX_DATA_ROOT": root.path,
+            "BLACKBOX_SYNTHETIC_FIXTURE": "deterministic"
+        ]
+        _ = UITestLaunchConfiguration.pathsForCurrentLaunch(
+            arguments: ["Blackbox", "--ui-testing"],
+            environment: baseEnvironment,
+            fileManager: fileManager
+        )
+
+        #expect(UITestLaunchConfiguration.syntheticFolderSelectionForCurrentLaunch(
+            arguments: ["Blackbox", "--ui-testing"],
+            environment: baseEnvironment,
+            fileManager: fileManager
+        ) == nil)
+
+        var exportEnvironment = baseEnvironment
+        exportEnvironment["BLACKBOX_UI_TEST_FOLDER_SELECTION"] = "exports"
+        let selection = UITestLaunchConfiguration.syntheticFolderSelectionForCurrentLaunch(
+            arguments: ["Blackbox", "--ui-testing"],
+            environment: exportEnvironment,
+            fileManager: fileManager
+        )
+        let canonicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        #expect(selection == canonicalRoot.appendingPathComponent("Exports", isDirectory: true))
+        #expect(selection?.deletingLastPathComponent() == canonicalRoot)
+    }
+
     @Test("UI test windows are fitted inside the visible screen")
     func testWindowFramesAreFittedAndCentered() {
         let visible = NSRect(x: 0, y: 0, width: 1_024, height: 768)
