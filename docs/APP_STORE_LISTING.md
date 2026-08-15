@@ -4,8 +4,8 @@ This is the reviewed English (U.K.) copy deck for App Store Connect. It uses onl
 
 ## Product identity
 
-- Name: `Blackbox`
-- Subtitle: `Private Pilot Logbook`
+- Name: `Blackbox Pilot Logbook`
+- Subtitle: `Private. Local. Auditable.`
 - Primary language: `English (U.K.)`
 - Primary category: `Productivity`
 - Secondary category: `Travel`
@@ -83,4 +83,4 @@ All screenshots must be generated at 2880 × 1800 with `./script/build_and_run.s
 - Content rights: proposed confirmation that the publisher owns or has rights to all content; evidence is in `THIRD_PARTY_NOTICES.md`.
 - Age rating: proposed answers are `None` / `No` for all content, communication, social, gambling, loot-box, advertising, and unrestricted-web-access questions.
 - Encryption: version 1.0 uses CryptoKit AES-GCM and PBKDF2-HMAC-SHA256 solely for user-created local encrypted backups. Export-compliance answers must be confirmed by the Account Holder.
-- Availability, price, and release timing are business decisions and are intentionally not assumed here.
+- Business configuration approved by the Account Holder: free in all supported territories, with automatic release after Apple approval.
