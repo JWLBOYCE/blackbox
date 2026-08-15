@@ -82,5 +82,5 @@ All screenshots must be generated at 2880 × 1800 with `./script/build_and_run.s
 - App privacy: proposed `No, we do not collect data from this app`, based on the version 1.0 source and dependency audit.
 - Content rights: proposed confirmation that the publisher owns or has rights to all content; evidence is in `THIRD_PARTY_NOTICES.md`.
 - Age rating: proposed answers are `None` / `No` for all content, communication, social, gambling, loot-box, advertising, and unrestricted-web-access questions.
-- Encryption: version 1.0 uses CryptoKit AES-GCM and PBKDF2-HMAC-SHA256 solely for user-created local encrypted backups. Export-compliance answers must be confirmed by the Account Holder.
+- Encryption: version 1.0 uses Apple-provided CryptoKit AES-GCM and CommonCrypto PBKDF2-HMAC-SHA256 solely for user-created local encrypted backups. The Account Holder approved the exempt-encryption declaration (`ITSAppUsesNonExemptEncryption = false`), so no App Store Connect documentation is expected.
 - Business configuration approved by the Account Holder: free in all supported territories, with automatic release after Apple approval.
