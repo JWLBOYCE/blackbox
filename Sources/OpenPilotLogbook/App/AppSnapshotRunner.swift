@@ -42,6 +42,10 @@ enum AppSnapshotRunner {
         try seedPrivacySafeSampleData(at: paths)
         let store = LogbookStore(paths: paths)
         store.selectedSection = AppSection(rawValue: section) ?? sectionByIdentifier(section)
+        if store.selectedSection == .flights,
+           let editableSample = store.flights.first(where: { $0.recordState == .draft }) {
+            store.selectFlightImmediately(id: editableSample.id)
+        }
 
         let size = CGSize(width: width, height: height)
         let hostingController = NSHostingController(rootView: ContentView(store: store).frame(width: size.width, height: size.height))

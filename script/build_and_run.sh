@@ -161,6 +161,47 @@ render_snapshot() {
   fi
 }
 
+render_app_store_screenshot() {
+  local section="$1"
+  local filename="$2"
+  local appearance="$3"
+  local screenshot_dir="$ROOT_DIR/outputs/app-store"
+  local png="$screenshot_dir/$filename.png"
+  local jpg="$screenshot_dir/$filename.jpg"
+
+  mkdir -p "$screenshot_dir"
+  # A titled macOS window adds local backing-store chrome. These content
+  # dimensions produce Apple's required 2880 x 1800 captured Mac image on a
+  # Retina display without resizing or distorting the app UI.
+  render_snapshot "$section" "$png" 1442 848 "$appearance"
+  /usr/bin/sips -s format jpeg -s formatOptions 90 "$png" --out "$jpg" >/dev/null
+  rm -f "$png"
+
+  local width
+  local height
+  local has_alpha
+  width="$(/usr/bin/sips -g pixelWidth "$jpg" 2>/dev/null | /usr/bin/awk '/pixelWidth:/{print $2}')"
+  height="$(/usr/bin/sips -g pixelHeight "$jpg" 2>/dev/null | /usr/bin/awk '/pixelHeight:/{print $2}')"
+  if [[ "$width" -ge 2880 && "$height" -ge 1800 && ( "$width" != 2880 || "$height" != 1800 ) ]]; then
+    local cropped="$screenshot_dir/$filename-cropped.jpg"
+    /usr/bin/sips --cropToHeightWidth 1800 2880 "$jpg" --out "$cropped" >/dev/null
+    mv "$cropped" "$jpg"
+    width="$(/usr/bin/sips -g pixelWidth "$jpg" 2>/dev/null | /usr/bin/awk '/pixelWidth:/{print $2}')"
+    height="$(/usr/bin/sips -g pixelHeight "$jpg" 2>/dev/null | /usr/bin/awk '/pixelHeight:/{print $2}')"
+  elif [[ "$width" -le 2880 && "$height" -le 1800 && ( "$width" != 2880 || "$height" != 1800 ) ]]; then
+    local padded="$screenshot_dir/$filename-padded.jpg"
+    /usr/bin/sips --padToHeightWidth 1800 2880 --padColor 0B1220 "$jpg" --out "$padded" >/dev/null
+    mv "$padded" "$jpg"
+    width="$(/usr/bin/sips -g pixelWidth "$jpg" 2>/dev/null | /usr/bin/awk '/pixelWidth:/{print $2}')"
+    height="$(/usr/bin/sips -g pixelHeight "$jpg" 2>/dev/null | /usr/bin/awk '/pixelHeight:/{print $2}')"
+  fi
+  has_alpha="$(/usr/bin/sips -g hasAlpha "$jpg" 2>/dev/null | /usr/bin/awk '/hasAlpha:/{print $2}')"
+  if [[ "$width" != 2880 || "$height" != 1800 || "$has_alpha" != no ]]; then
+    echo "App Store screenshot validation failed for $jpg: ${width}x${height}, alpha=$has_alpha" >&2
+    exit 1
+  fi
+}
+
 case "$MODE" in
   run)
     open_app
@@ -223,8 +264,16 @@ case "$MODE" in
       exit 1
     fi
     ;;
+  --app-store-screenshots|app-store-screenshots)
+    render_app_store_screenshot dashboard 01-dashboard dark
+    render_app_store_screenshot flights 02-flights light
+    render_app_store_screenshot map 03-map dark
+    render_app_store_screenshot analysis 04-analysis dark
+    render_app_store_screenshot reports 05-reports light
+    echo "Validated App Store screenshots: $ROOT_DIR/outputs/app-store"
+    ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--check]" >&2
+    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--check|--app-store-screenshots]" >&2
     exit 2
     ;;
 esac

@@ -21,7 +21,7 @@ struct MapDashboardView: View {
                     Spacer(minLength: 16)
                     HStack {
                         Spacer()
-                        bottomControls
+                        bottomOverlay
                     }
                 }
                 .padding(isCompact ? 16 : 24)
@@ -219,6 +219,21 @@ struct MapDashboardView: View {
         .overlay {
             RoundedRectangle(cornerRadius: OpenPilotTheme.corner)
                 .stroke(OpenPilotTheme.border, lineWidth: 1)
+        }
+    }
+
+    private var bottomOverlay: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            bottomControls
+            HStack(spacing: 4) {
+                Text("Earth imagery:")
+                Link("NASA Visible Earth", destination: URL(string: "https://visibleearth.nasa.gov/collection/1484/planet-textures")!)
+                Text("· Airport data:")
+                Link("OurAirports", destination: URL(string: "https://ourairports.com/data/")!)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
         }
     }
 
