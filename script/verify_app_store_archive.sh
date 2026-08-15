@@ -37,11 +37,11 @@ for entitlement in \
   com.apple.security.app-sandbox \
   com.apple.security.files.bookmarks.app-scope \
   com.apple.security.files.user-selected.read-write; do
-  [[ "$(/usr/bin/plutil -extract "$entitlement" raw -o - "$ENTITLEMENTS_FILE")" == true ]] \
+  [[ "$(/usr/libexec/PlistBuddy -c "Print :$entitlement" "$ENTITLEMENTS_FILE")" == true ]] \
     || fail "Required entitlement is missing: $entitlement"
 done
-if /usr/bin/plutil -extract com.apple.security.get-task-allow raw -o - "$ENTITLEMENTS_FILE" >/dev/null 2>&1; then
-  [[ "$(/usr/bin/plutil -extract com.apple.security.get-task-allow raw -o - "$ENTITLEMENTS_FILE")" == false ]] \
+if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "$ENTITLEMENTS_FILE" >/dev/null 2>&1; then
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "$ENTITLEMENTS_FILE")" == false ]] \
     || fail "Distribution archive must not allow debugger attachment."
 fi
 
