@@ -23,7 +23,7 @@ trap 'rm -f "$ENTITLEMENTS_FILE"' EXIT
 [[ -f "$INFO_PLIST" ]] || fail "Archived Info.plist is missing."
 [[ -x "$EXECUTABLE" ]] || fail "Archived executable is missing or not executable."
 /usr/bin/codesign --verify --strict --verbose=2 "$APP_PATH"
-/usr/bin/codesign -d --entitlements "$ENTITLEMENTS_FILE" "$APP_PATH" 2>/dev/null
+/usr/bin/codesign -d --entitlements "$ENTITLEMENTS_FILE" --xml "$APP_PATH" 2>/dev/null
 /usr/bin/plutil -lint "$INFO_PLIST" "$ENTITLEMENTS_FILE" >/dev/null
 
 [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$INFO_PLIST")" == "$EXPECTED_BUNDLE_ID" ]] \
